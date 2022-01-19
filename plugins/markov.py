@@ -1,19 +1,24 @@
-import asyncio
-import random
-import re
-import typing
+from asyncio import sleep
+from datetime import datetime, timedelta
+from random import choice, choices
+from re import match, sub, MULTILINE
+from tempfile import NamedTemporaryFile
+from typing import Optional
+
+from lockfile import LockFile
 
 from discord import TextChannel
 from discord.ext import commands
 from discord.errors import NotFound
-from sqlalchemy import Boolean, Column, Integer, String
+from sqlalchemy import Boolean, Column, DateTime, Integer, String
 from sqlalchemy import ForeignKey, UniqueConstraint
 
 from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
 
-# Get this number of random items to keep in memory when running markov speak
-MARKOV_RANDOM_SPLIT = 10
+
+# Default for how many days to keep messages around
+MARKOV_HISTORY_RETENTION_DAYS = 365
 
 def clean_message(content, emoji_ids):
     '''
@@ -24,8 +29,8 @@ def clean_message(content, emoji_ids):
     Returns "corpus", list of cleaned words
     '''
     # Remove web links and mentions from text
-    message_text = re.sub(r'(https?\://|\<\@)\S+', '',
-                          content, flags=re.MULTILINE)
+    message_text = sub(r'(https?\://|\<\@)\S+', '',
+                       content, flags=MULTILINE)
     # Doesnt remove @here or @everyone
     message_text = message_text.replace('@here', '')
     message_text = message_text.replace('@everyone', '')
@@ -40,9 +45,9 @@ def clean_message(content, emoji_ids):
         # Emojis can be case sensitive so do not lower them
         # Custom emojis usually have <:emoji:id> format
         # Ex: <:fail:1231031923091032910390>
-        match = re.match('^\ *<(?P<emoji>:\w+:)(?P<id>\d+)>\ *$', word)
-        if match:
-            if int(match.group('id')) in emoji_ids:
+        match_result = match('^\ *<(?P<emoji>:\w+:)(?P<id>\d+)>\ *$', word)
+        if match_result:
+            if int(match_result.group('id')) in emoji_ids:
                 corpus.append(word)
             continue
         corpus.append(word.lower())
@@ -88,15 +93,23 @@ class MarkovRelation(BASE):
     id = Column(Integer, primary_key=True)
     leader_id = Column(Integer, ForeignKey('markov_word.id'))
     follower_id = Column(Integer, ForeignKey('markov_word.id'))
-    count = Column(Integer)
+    created_at = Column(DateTime)
 
 
 class Markov(CogHelper):
     '''
     Save markov relations to a database periodically
     '''
-    def __init__(self, bot, db_session, logger, settings):
-        super().__init__(bot, db_session, logger, settings)
+    def __init__(self, bot, db_engine, logger, settings):
+        super().__init__(bot, db_engine, logger, settings)
+        BASE.metadata.create_all(self.db_engine)
+        BASE.metadata.bind = self.db_engine
+        if 'markov_history_rention_days' not in settings:
+            self.settings['markov_history_rention_days'] = MARKOV_HISTORY_RETENTION_DAYS
+        # Keep lock file for later
+        self.lock_file = NamedTemporaryFile(delete=False) #pylint:disable=consider-using-with
+        self.lock = LockFile(self.lock_file.name)
+
         self.bot.loop.create_task(self.wait_loop())
 
     def __ensure_word(self, word, markov_channel):
@@ -114,22 +127,8 @@ class Markov(CogHelper):
         self.db_session.flush()
         return new_word
 
-    def __ensure_relation(self, leader, follower):
-        markov_relation = self.db_session.query(MarkovRelation).\
-                filter(MarkovRelation.leader_id == leader.id).\
-                filter(MarkovRelation.follower_id == follower.id).first()
-        if markov_relation:
-            return markov_relation
-        new_relation = MarkovRelation(leader_id=leader.id,
-                                      follower_id=follower.id,
-                                      count=0)
-        self.db_session.add(new_relation)
-        self.db_session.commit()
-        self.db_session.flush()
-        return new_relation
-
     # https://srome.github.io/Making-A-Markov-Chain-Twitter-Bot-In-Python/
-    def __build_and_save_relations(self, corpus, markov_channel):
+    def __build_and_save_relations(self, corpus, markov_channel, message_timestamp):
         for (k, word) in enumerate(corpus):
             if k != len(corpus) - 1: # Deal with last word
                 next_word = corpus[k+1]
@@ -142,8 +141,11 @@ class Markov(CogHelper):
             follower_word = self.__ensure_word(next_word, markov_channel)
             if follower_word is None:
                 continue
-            relation = self.__ensure_relation(leader_word, follower_word)
-            relation.count += 1
+            new_relation = MarkovRelation(leader_id=leader_word.id,
+                                          follower_id=follower_word.id,
+                                          created_at=message_timestamp)
+            self.db_session.add(new_relation)
+            self.db_session.commit()
 
     def _delete_channel_words(self, channel_id):
         markov_words = self.db_session.query(MarkovWord.id).\
@@ -162,6 +164,12 @@ class Markov(CogHelper):
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
+
+            self.logger.debug('Markov - Message loop waiting to acquire lock')
+            self.lock.acquire()
+
+            retention_cutoff = datetime.utcnow() - timedelta(days=self.settings['markov_history_rention_days'])
+            self.logger.debug(f'Using cutoff {retention_cutoff} for markov bot')
             for markov_channel in self.db_session.query(MarkovChannel).all():
                 channel = await self.bot.fetch_channel(markov_channel.channel_id)
                 server = await self.bot.fetch_guild(markov_channel.server_id)
@@ -195,6 +203,10 @@ class Markov(CogHelper):
                     self.logger.debug(f'Gathering message {message.id} '
                                       f'for channel {markov_channel.channel_id}')
                     markov_channel.last_message_id = message.id
+                    # Skip messages older than retention date
+                    if message.created_at < retention_cutoff:
+                        self.logger.warning(f'Message {message.id} too old for channel, skipping')
+                        continue
                     # If no content continue or from a bot skip
                     if not message.content or message.author.bot:
                         continue
@@ -206,11 +218,16 @@ class Markov(CogHelper):
                         continue
                     self.logger.info(f'Attempting to add corpus "{corpus}" '
                                      f'to channel {markov_channel.channel_id}')
-                    self.__build_and_save_relations(corpus, markov_channel)
+                    self.__build_and_save_relations(corpus, markov_channel, message.created_at)
                 # Commit at the end in case the last message was skipped
                 self.db_session.commit()
 
-            await asyncio.sleep(180)
+            # Clean up old messages
+            self.db_session.query(MarkovRelation).filter(MarkovRelation.created_at < retention_cutoff).delete()
+            # Wait until next loop
+            self.lock.release()
+            self.logger.debug('Waiting 30 minutes for next markov iteration')
+            await sleep(1800) # Every 30 minutes
 
     @commands.group(name='markov', invoke_without_command=False)
     async def markov(self, ctx): #pylint:disable=no-self-use
@@ -221,7 +238,7 @@ class Markov(CogHelper):
             await ctx.send('Invalid sub command passed...')
 
     @markov.command(name='on')
-    async def on(self, ctx, channel_type: typing.Optional[str] = 'public'):
+    async def on(self, ctx, channel_type: Optional[str] = 'public'):
         '''
         Turn markov on for channel
         channel_type    :   Either "private" or "public", will be "public" by default
@@ -261,6 +278,8 @@ class Markov(CogHelper):
         '''
         Turn markov off for channel
         '''
+        self.logger.debug('Markov - Off waiting for acquire lock')
+        self.lock.acquire()
         # Ensure channel not already on
         markov_channel = self.db_session.query(MarkovChannel).\
             filter(MarkovChannel.channel_id == str(ctx.channel.id)).\
@@ -274,12 +293,13 @@ class Markov(CogHelper):
         self.db_session.delete(markov_channel)
         self.db_session.commit()
 
+        self.lock.release()
         return await ctx.send('Markov turned off for channel')
 
     @markov.command(name='speak')
     async def speak(self, ctx, #pylint:disable=too-many-locals
-                    first_word: typing.Optional[str] = '',
-                    sentence_length: typing.Optional[int] = 32):
+                    first_word: Optional[str] = '',
+                    sentence_length: Optional[int] = 32):
         '''
         Say a random sentence generated by markov
 
@@ -291,7 +311,8 @@ class Markov(CogHelper):
         Note that for first_word, multiple words can be given, but they must be in quotes
         Ex: !markov speak "hey whats up", or !markov speak "hey whats up" 64
         '''
-
+        self.logger.debug('Markov - Speak waiting to acquire lock')
+        self.lock.acquire()
         all_words = []
         first = None
         if first_word:
@@ -336,17 +357,16 @@ class Markov(CogHelper):
             if first_word:
                 return await ctx.send(f'No markov word matching "{first_word}"')
             return await ctx.send('No markov words to pick from')
-        word = self.db_session.query(MarkovWord).get(random.choice(possible_word_ids)).word
+        word = self.db_session.query(MarkovWord).get(choice(possible_word_ids)).word
         all_words.append(word)
 
         # Save a cache layer to reduce db calls
         follower_cache = {}
         for _ in range(sentence_length + 1):
             try:
-                _follower_choices = follower_cache[word]['choices']
-                _follower_weights = follower_cache[word]['weights']
+                _follower_choices = follower_cache[word]
             except KeyError:
-                follower_cache[word] = {'choices' : [], 'weights': []}
+                follower_cache[word] = {}
 
                 # Get all leader ids first so you can pass it in
                 # First get all leader ids from public channels
@@ -364,42 +384,15 @@ class Markov(CogHelper):
                         filter(MarkovChannel.server_id == str(ctx.guild.id)).\
                         filter(MarkovWord.word == word))
 
-                # Get total amount of leader and followers
-                total_followers = self.db_session.query(MarkovRelation, MarkovWord).\
-                        filter(MarkovRelation.leader_id.in_(leader_ids.subquery())).\
-                        join(MarkovWord, MarkovRelation.follower_id == MarkovWord.id).count()
-
-                # Instead of gathering every possible outcome, which can lead to thousands of entries in memory
-                # .. grab a random value from a portion from every Nth split ( set by MARKOV_RANDOM_SPLIT ) portion of the list, sorted
-                # .. by relation count
-                # For example, if you had 100 entries and a split of 10, grab a random value from every 10th portion
-                # Random value from 0 --> 9 position
-                # Random value from 10 --> 19 position
-                # Random value from 20 --> 29 position
-                # etc..
-
                 # First generate basic ordered query to get the offsets from
-                follower_relation_query = self.db_session.query(MarkovRelation, MarkovWord).\
+                for _relation, follower_word in self.db_session.query(MarkovRelation, MarkovWord).\
                         filter(MarkovRelation.leader_id.in_(leader_ids.subquery())).\
-                        join(MarkovWord, MarkovRelation.follower_id == MarkovWord.id).\
-                        order_by(MarkovRelation.count.asc())
+                        join(MarkovWord, MarkovRelation.follower_id == MarkovWord.id):
+                    follower_cache[word].setdefault(follower_word.word, 0)
+                    follower_cache[word][follower_word.word] += 1
 
-                # Then grab each value from the Nth positions
-                current_index = 0
-                while current_index < total_followers:
-                    max_range = current_index + (int(total_followers / MARKOV_RANDOM_SPLIT) or 1)
-                    random_offset = random.randint(current_index, max_range - 1)
-                    # Usually typeerror here means we ran out of results
-                    try:
-                        relation, follower = follower_relation_query.offset(random_offset).first()
-                    except TypeError:
-                        self.logger.warning(f'Type Error on sql query, offset {random_offset}, leader word {word}')
-                        break
-                    follower_cache[word]['choices'].append(follower.word)
-                    follower_cache[word]['weights'].append(relation.count)
-                    current_index = max_range
-            word = random.choices(follower_cache[word]['choices'],
-                                  weights=follower_cache[word]['weights'],
-                                  k=1)[0]
+            word = choices(list(follower_cache[word].keys()),
+                           weights=list(follower_cache[word].values()))[0]
             all_words.append(word)
+        self.lock.release()
         return await ctx.send(' '.join(markov_word for markov_word in all_words))

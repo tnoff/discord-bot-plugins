@@ -50,8 +50,10 @@ class Twitter(CogHelper):
     '''
     Subscribe to twitter accounts and post messages in channel
     '''
-    def __init__(self, bot, db_session, logger, settings):
-        super().__init__(bot, db_session, logger, settings)
+    def __init__(self, bot, db_engine, logger, settings):
+        super().__init__(bot, db_engine, logger, settings)
+        BASE.metadata.create_all(self.db_engine)
+        BASE.metadata.bind = self.db_engine
         for key in REQUIRED_ARGS:
             if key not in settings:
                 raise CogMissingRequiredArg(f'Twitter cog missing required key {key}')
