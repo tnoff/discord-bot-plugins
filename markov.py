@@ -78,7 +78,7 @@ class MarkovWord(BASE):
     '''
     __tablename__ = 'markov_word'
     id = Column(Integer, primary_key=True)
-    word = Column(String(128))
+    word = Column(String(1024))
     channel_id = Column(Integer, ForeignKey('markov_channel.id'))
 
 class MarkovRelation(BASE):
@@ -160,18 +160,17 @@ class Markov(CogHelper):
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
-
-            self.logger.debug('Markov - Message loop waiting to acquire lock')
-            self.lock.acquire()
-
+            self.logger.debug('Markov - Entering message gather loop')
             retention_cutoff = datetime.utcnow() - timedelta(days=self.settings['markov_history_rention_days'])
             self.logger.debug(f'Using cutoff {retention_cutoff} for markov bot')
+
             for markov_channel in self.db_session.query(MarkovChannel).all():
                 channel = await self.bot.fetch_channel(markov_channel.channel_id)
                 server = await self.bot.fetch_guild(markov_channel.server_id)
                 emoji_ids = [emoji.id for emoji in await server.fetch_emojis()]
                 self.logger.info('Gathering markov messages for '
-                                 f'channel {markov_channel.channel_id}')
+                                 f'channel {markov_channel.channel_id}, waiting for lock')
+                self.lock.acquire()
                 # Start at the beginning of channel history,
                 # slowly make your way make to current day
                 if not markov_channel.last_message_id:
@@ -217,8 +216,12 @@ class Markov(CogHelper):
                     self.__build_and_save_relations(corpus, markov_channel, message.created_at)
                 # Commit at the end in case the last message was skipped
                 self.db_session.commit()
+                self.logger.debug(f'Done with channel {markov_channel.channeld_id}, releasing lock')
+                self.lock.release()
 
             # Clean up old messages
+            self.logger.debug('Attempting to delete old relations, waitin for lock')
+            self.lock.acquire()
             self.db_session.query(MarkovRelation).filter(MarkovRelation.created_at < retention_cutoff).delete()
             # Wait until next loop
             self.lock.release()
