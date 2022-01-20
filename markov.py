@@ -86,10 +86,6 @@ class MarkovRelation(BASE):
     Markov Relation
     '''
     __tablename__ = 'markov_relation'
-    __table_args__ = (
-        UniqueConstraint('leader_id', 'follower_id',
-                         name='_unique_markov_relation'),
-    )
     id = Column(Integer, primary_key=True)
     leader_id = Column(Integer, ForeignKey('markov_word.id'))
     follower_id = Column(Integer, ForeignKey('markov_word.id'))
@@ -179,7 +175,7 @@ class Markov(CogHelper):
                 # Start at the beginning of channel history,
                 # slowly make your way make to current day
                 if not markov_channel.last_message_id:
-                    messages = await channel.history(limit=128, oldest_first=True).flatten()
+                    messages = await channel.history(limit=128, after=retention_cutoff, oldest_first=True).flatten()
                 else:
                     try:
                         last_message = await channel.fetch_message(markov_channel.last_message_id)
