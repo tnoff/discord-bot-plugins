@@ -12,6 +12,7 @@ from discord.ext import commands
 from discord.errors import NotFound
 from sqlalchemy import Boolean, Column, DateTime, Integer, String
 from sqlalchemy import ForeignKey, UniqueConstraint
+from sqlalchemy import func
 
 from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
@@ -216,7 +217,7 @@ class Markov(CogHelper):
                     self.__build_and_save_relations(corpus, markov_channel, message.created_at)
                 # Commit at the end in case the last message was skipped
                 self.db_session.commit()
-                self.logger.debug(f'Done with channel {markov_channel.channeld_id}, releasing lock')
+                self.logger.debug(f'Done with channel {markov_channel.channel_id}, releasing lock')
                 self.lock.release()
 
             # Clean up old messages
@@ -384,12 +385,11 @@ class Markov(CogHelper):
                         filter(MarkovWord.word == word))
 
                 # First generate basic ordered query to get the offsets from
-                for _relation, follower_word in self.db_session.query(MarkovRelation, MarkovWord).\
+                for _relation, follower_word, count in self.db_session.query(MarkovRelation, MarkovWord.word, func.count(MarkovWord.word)).\
                         filter(MarkovRelation.leader_id.in_(leader_ids.subquery())).\
-                        join(MarkovWord, MarkovRelation.follower_id == MarkovWord.id):
-                    follower_cache[word].setdefault(follower_word.word, 0)
-                    follower_cache[word][follower_word.word] += 1
-
+                        join(MarkovWord, MarkovRelation.follower_id == MarkovWord.id).\
+                        group_by(MarkovWord.word):
+                    follower_cache[word][follower_word] = count
             word = choices(list(follower_cache[word].keys()),
                            weights=list(follower_cache[word].values()))[0]
             all_words.append(word)
