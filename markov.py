@@ -13,6 +13,7 @@ from discord.errors import NotFound
 from sqlalchemy import Boolean, Column, DateTime, Integer, String
 from sqlalchemy import ForeignKey, UniqueConstraint
 from sqlalchemy import func
+from sqlalchemy.orm import relationship
 
 from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
@@ -73,15 +74,6 @@ class MarkovChannel(BASE):
     last_message_id = Column(String(128))
     is_private = Column(Boolean)
 
-class MarkovWord(BASE):
-    '''
-    Markov word
-    '''
-    __tablename__ = 'markov_word'
-    id = Column(Integer, primary_key=True)
-    word = Column(String(1024))
-    channel_id = Column(Integer, ForeignKey('markov_channel.id'))
-
 class MarkovRelation(BASE):
     '''
     Markov Relation
@@ -91,6 +83,17 @@ class MarkovRelation(BASE):
     leader_id = Column(Integer, ForeignKey('markov_word.id'))
     follower_id = Column(Integer, ForeignKey('markov_word.id'))
     created_at = Column(DateTime)
+
+class MarkovWord(BASE):
+    '''
+    Markov word
+    '''
+    __tablename__ = 'markov_word'
+    id = Column(Integer, primary_key=True)
+    word = Column(String(1024))
+    channel_id = Column(Integer, ForeignKey('markov_channel.id'))
+    leader_relations = relationship('MarkovRelation', foreign_keys=[MarkovRelation.leader_id])
+    follower_relations = relationship('MarkovRelation', foreign_keys=[MarkovRelation.follower_id])
 
 
 class Markov(CogHelper):
@@ -224,6 +227,9 @@ class Markov(CogHelper):
             self.logger.debug('Attempting to delete old relations, waitin for lock')
             self.lock.acquire()
             self.db_session.query(MarkovRelation).filter(MarkovRelation.created_at < retention_cutoff).delete()
+            # Query all words not used as a "leader_id", assume its hanging
+            self.db_session.query(MarkovWord).filter(~MarkovWord.leader_relations.any()).delete(synchronize_session='fetch')
+
             # Wait until next loop
             self.lock.release()
             self.logger.debug('Waiting 30 minutes for next markov iteration')
@@ -357,41 +363,40 @@ class Markov(CogHelper):
             if first_word:
                 return await ctx.send(f'No markov word matching "{first_word}"')
             return await ctx.send('No markov words to pick from')
+
         word = self.db_session.query(MarkovWord).get(choice(possible_word_ids)).word
         all_words.append(word)
 
         # Save a cache layer to reduce db calls
         follower_cache = {}
         for _ in range(sentence_length + 1):
-            try:
-                _follower_choices = follower_cache[word]
-            except KeyError:
-                follower_cache[word] = {}
+            # Get all leader ids first so you can pass it in
+            # First get all leader ids from public channels
+            leader_ids = self.db_session.query(MarkovWord.id).\
+                    join(MarkovChannel, MarkovChannel.id == MarkovWord.channel_id).\
+                    filter(MarkovChannel.server_id == str(ctx.guild.id)).\
+                    filter(MarkovChannel.is_private == False).\
+                    filter(MarkovWord.word == word)
+            # If current channel is private, add this channels results to query
+            if markov_channel and markov_channel.is_private:
+                # Results either come from this private channel
+                # or from another public channel within server
+                leader_ids = leader_ids.union(self.db_session.query(MarkovWord.id).\
+                    filter(MarkovWord.channel_id == markov_channel.id).\
+                    filter(MarkovChannel.server_id == str(ctx.guild.id)).\
+                    filter(MarkovWord.word == word))
 
-                # Get all leader ids first so you can pass it in
-                # First get all leader ids from public channels
-                leader_ids = self.db_session.query(MarkovWord.id).\
-                        join(MarkovChannel, MarkovChannel.id == MarkovWord.channel_id).\
-                        filter(MarkovChannel.server_id == str(ctx.guild.id)).\
-                        filter(MarkovChannel.is_private == False).\
-                        filter(MarkovWord.word == word)
-                # If current channel is private, add this channels results to query
-                if markov_channel and markov_channel.is_private:
-                    # Results either come from this private channel
-                    # or from another public channel within server
-                    leader_ids = leader_ids.union(self.db_session.query(MarkovWord.id).\
-                        filter(MarkovWord.channel_id == markov_channel.id).\
-                        filter(MarkovChannel.server_id == str(ctx.guild.id)).\
-                        filter(MarkovWord.word == word))
-
-                # First generate basic ordered query to get the offsets from
-                for _relation, follower_word, count in self.db_session.query(MarkovRelation, MarkovWord.word, func.count(MarkovWord.word)).\
-                        filter(MarkovRelation.leader_id.in_(leader_ids.subquery())).\
-                        join(MarkovWord, MarkovRelation.follower_id == MarkovWord.id).\
-                        group_by(MarkovWord.word):
-                    follower_cache[word][follower_word] = count
-            word = choices(list(follower_cache[word].keys()),
-                           weights=list(follower_cache[word].values()))[0]
+            possible_words = []
+            weights = []
+            # First generate basic ordered query to get the offsets from
+            for _relation, follower_word, count in self.db_session.query(MarkovRelation, MarkovWord.word, func.count(MarkovWord.word)).\
+                    filter(MarkovRelation.leader_id.in_(leader_ids.subquery())).\
+                    join(MarkovWord, MarkovRelation.follower_id == MarkovWord.id).\
+                    group_by(MarkovWord.word):
+                possible_words.append(follower_word)
+                weights.append(count)
+            word = choices(possible_words, weights=weights)[0]
             all_words.append(word)
+            count += 1
         self.lock.release()
         return await ctx.send(' '.join(markov_word for markov_word in all_words))
