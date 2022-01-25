@@ -40,6 +40,9 @@ def clean_message(content, emoji_ids):
     message_text = message_text.strip()
     corpus = []
     for word in message_text.split(' '):
+        # Check for commands again
+        if word[0] == '!':
+            continue
         if word in ('', ' '):
             continue
         # Check for emojis in message
@@ -178,7 +181,7 @@ class Markov(CogHelper):
                 # Start at the beginning of channel history,
                 # slowly make your way make to current day
                 if not markov_channel.last_message_id:
-                    messages = await channel.history(limit=128, after=retention_cutoff, oldest_first=True).flatten()
+                    messages = await channel.history(limit=16, after=retention_cutoff, oldest_first=True).flatten()
                 else:
                     try:
                         last_message = await channel.fetch_message(markov_channel.last_message_id)
@@ -222,6 +225,7 @@ class Markov(CogHelper):
                 self.db_session.commit()
                 self.logger.debug(f'Done with channel {markov_channel.channel_id}, releasing lock')
                 self.lock.release()
+                sleep(60) # Wait 60 seconds between iterations
 
             # Clean up old messages
             self.logger.debug('Attempting to delete old relations, waitin for lock')
