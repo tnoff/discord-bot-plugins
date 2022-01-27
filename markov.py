@@ -5,8 +5,6 @@ from re import match, sub, MULTILINE
 from tempfile import NamedTemporaryFile
 from typing import Optional
 
-from lockfile import LockFile
-
 from discord import TextChannel
 from discord.ext import commands
 from discord.errors import NotFound
@@ -40,10 +38,10 @@ def clean_message(content, emoji_ids):
     message_text = message_text.strip()
     corpus = []
     for word in message_text.split(' '):
+        if word in ('', ' '):
+            continue
         # Check for commands again
         if word[0] == '!':
-            continue
-        if word in ('', ' '):
             continue
         # Check for emojis in message
         # If emoji, check if belongs to list, if not, disregard it
@@ -109,9 +107,6 @@ class Markov(CogHelper):
         BASE.metadata.bind = self.db_engine
         if 'markov_history_rention_days' not in settings:
             self.settings['markov_history_rention_days'] = MARKOV_HISTORY_RETENTION_DAYS
-        # Keep lock file for later
-        self.lock_file = NamedTemporaryFile(delete=False) #pylint:disable=consider-using-with
-        self.lock = LockFile(self.lock_file.name)
 
         self.bot.loop.create_task(self.wait_loop())
 
@@ -176,8 +171,7 @@ class Markov(CogHelper):
                 server = await self.bot.fetch_guild(markov_channel.server_id)
                 emoji_ids = [emoji.id for emoji in await server.fetch_emojis()]
                 self.logger.info('Gathering markov messages for '
-                                 f'channel {markov_channel.channel_id}, waiting for lock')
-                self.lock.acquire()
+                                 f'channel {markov_channel.channel_id}')
                 # Start at the beginning of channel history,
                 # slowly make your way make to current day
                 if not markov_channel.last_message_id:
@@ -223,21 +217,18 @@ class Markov(CogHelper):
                     self.__build_and_save_relations(corpus, markov_channel, message.created_at)
                 # Commit at the end in case the last message was skipped
                 self.db_session.commit()
-                self.logger.debug(f'Done with channel {markov_channel.channel_id}, releasing lock')
-                self.lock.release()
-                sleep(60) # Wait 60 seconds between iterations
+                self.logger.debug(f'Done with channel {markov_channel.channel_id}')
+                await sleep(1) # Sleep one second just in case someone called a command
 
             # Clean up old messages
-            self.logger.debug('Attempting to delete old relations, waitin for lock')
-            self.lock.acquire()
+            self.logger.debug('Attempting to delete old relations')
             self.db_session.query(MarkovRelation).filter(MarkovRelation.created_at < retention_cutoff).delete()
             # Query all words not used as a "leader_id", assume its hanging
             self.db_session.query(MarkovWord).filter(~MarkovWord.leader_relations.any()).delete(synchronize_session='fetch')
 
             # Wait until next loop
-            self.lock.release()
-            self.logger.debug('Waiting 30 minutes for next markov iteration')
-            await sleep(1800) # Every 30 minutes
+            self.logger.debug('Waiting 5 minutes for next markov iteration')
+            await sleep(300) # Every 5 minutes
 
     @commands.group(name='markov', invoke_without_command=False)
     async def markov(self, ctx): #pylint:disable=no-self-use
@@ -288,8 +279,6 @@ class Markov(CogHelper):
         '''
         Turn markov off for channel
         '''
-        self.logger.debug('Markov - Off waiting for acquire lock')
-        self.lock.acquire()
         # Ensure channel not already on
         markov_channel = self.db_session.query(MarkovChannel).\
             filter(MarkovChannel.channel_id == str(ctx.channel.id)).\
@@ -302,8 +291,6 @@ class Markov(CogHelper):
         self._delete_channel_words(markov_channel.id)
         self.db_session.delete(markov_channel)
         self.db_session.commit()
-
-        self.lock.release()
         return await ctx.send('Markov turned off for channel')
 
     @markov.command(name='speak')
@@ -321,8 +308,6 @@ class Markov(CogHelper):
         Note that for first_word, multiple words can be given, but they must be in quotes
         Ex: !markov speak "hey whats up", or !markov speak "hey whats up" 64
         '''
-        self.logger.debug('Markov - Speak waiting to acquire lock')
-        self.lock.acquire()
         all_words = []
         first = None
         if first_word:
@@ -402,5 +387,4 @@ class Markov(CogHelper):
             word = choices(possible_words, weights=weights)[0]
             all_words.append(word)
             count += 1
-        self.lock.release()
         return await ctx.send(' '.join(markov_word for markov_word in all_words))
