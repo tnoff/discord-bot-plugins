@@ -5,17 +5,22 @@ from re import match, sub, MULTILINE
 from tempfile import NamedTemporaryFile
 from typing import Optional
 
+from lockfile import LockFile
+
 from discord import TextChannel
 from discord.ext import commands
 from discord.errors import NotFound
 from sqlalchemy import Boolean, Column, DateTime, Integer, String
 from sqlalchemy import ForeignKey, UniqueConstraint
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import relationship
+
 
 from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
 
+MAX_WORD_LENGTH = 1024
 
 # Default for how many days to keep messages around
 MARKOV_HISTORY_RETENTION_DAYS = 365
@@ -89,9 +94,14 @@ class MarkovWord(BASE):
     '''
     Markov word
     '''
+    __table_args__ = (
+        UniqueConstraint('word', 'channel_id',
+                         name='_unique_markov_word'),
+    )
+
     __tablename__ = 'markov_word'
     id = Column(Integer, primary_key=True)
-    word = Column(String(1024))
+    word = Column(String(MAX_WORD_LENGTH))
     channel_id = Column(Integer, ForeignKey('markov_channel.id'))
     leader_relations = relationship('MarkovRelation', foreign_keys=[MarkovRelation.leader_id])
     follower_relations = relationship('MarkovRelation', foreign_keys=[MarkovRelation.follower_id])
@@ -108,21 +118,22 @@ class Markov(CogHelper):
         if 'markov_history_rention_days' not in settings:
             self.settings['markov_history_rention_days'] = MARKOV_HISTORY_RETENTION_DAYS
 
+        lock_file = NamedTemporaryFile(delete=False)
+        self.lock = LockFile(lock_file.name)
+
         self.bot.loop.create_task(self.wait_loop())
 
     def __ensure_word(self, word, markov_channel):
-        markov_word = self.db_session.query(MarkovWord).\
-                filter(MarkovWord.word == word).\
-                filter(MarkovWord.channel_id == markov_channel.id).first()
-        if markov_word:
-            return markov_word
-        if len(word) > 1024:
+        if len(word) >= MAX_WORD_LENGTH:
             self.logger.warning(f'Cannot add word "{word}", is too long')
             return None
-        new_word = MarkovWord(word=word, channel_id=markov_channel.id)
-        self.db_session.add(new_word)
-        self.db_session.commit()
-        self.db_session.flush()
+        try:
+            new_word = MarkovWord(word=word, channel_id=markov_channel.id)
+            self.db_session.add(new_word)
+            self.db_session.commit()
+            self.db_session.flush()
+        except IntegrityError:
+            return None
         return new_word
 
     # https://srome.github.io/Making-A-Markov-Chain-Twitter-Bot-In-Python/
@@ -162,6 +173,7 @@ class Markov(CogHelper):
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
+            self.lock.acquire()
             self.logger.debug('Markov - Entering message gather loop')
             retention_cutoff = datetime.utcnow() - timedelta(days=self.settings['markov_history_rention_days'])
             self.logger.debug(f'Using cutoff {retention_cutoff} for markov bot')
@@ -198,25 +210,26 @@ class Markov(CogHelper):
                 for message in messages:
                     self.logger.debug(f'Gathering message {message.id} '
                                       f'for channel {markov_channel.channel_id}')
-                    markov_channel.last_message_id = message.id
+                    add_message = True
                     # Skip messages older than retention date
                     if message.created_at < retention_cutoff:
                         self.logger.warning(f'Message {message.id} too old for channel, skipping')
-                        continue
+                        add_message = False
                     # If no content continue or from a bot skip
-                    if not message.content or message.author.bot:
-                        continue
+                    elif not message.content or message.author.bot:
+                        add_message = False
                     # If message begins with '!', assume it was a bot command
-                    if message.content[0] == '!':
-                        continue
-                    corpus = clean_message(message.content, emoji_ids)
-                    if not corpus:
-                        continue
-                    self.logger.info(f'Attempting to add corpus "{corpus}" '
-                                     f'to channel {markov_channel.channel_id}')
-                    self.__build_and_save_relations(corpus, markov_channel, message.created_at)
-                # Commit at the end in case the last message was skipped
-                self.db_session.commit()
+                    elif message.content[0] == '!':
+                        add_message = False
+                    corpus = None
+                    if add_message:
+                        corpus = clean_message(message.content, emoji_ids)
+                    if corpus:
+                        self.logger.info(f'Attempting to add corpus "{corpus}" '
+                                        f'to channel {markov_channel.channel_id}')
+                        self.__build_and_save_relations(corpus, markov_channel, message.created_at)
+                    markov_channel.last_message_id = str(message.id)
+                    self.db_session.commit()
                 self.logger.debug(f'Done with channel {markov_channel.channel_id}')
                 await sleep(1) # Sleep one second just in case someone called a command
 
@@ -226,6 +239,7 @@ class Markov(CogHelper):
             # Query all words not used as a "leader_id", assume its hanging
             self.db_session.query(MarkovWord).filter(~MarkovWord.leader_relations.any()).delete(synchronize_session='fetch')
 
+            self.lock.release()
             # Wait until next loop
             self.logger.debug('Waiting 5 minutes for next markov iteration')
             await sleep(300) # Every 5 minutes
@@ -248,6 +262,7 @@ class Markov(CogHelper):
             return await ctx.send(f'Invalid channel type "{channel_type}"')
         is_private = channel_type.lower() == 'private'
 
+        self.lock.acquire()
         # Ensure channel not already on
         markov = self.db_session.query(MarkovChannel).\
             filter(MarkovChannel.channel_id == str(ctx.channel.id)).\
@@ -271,7 +286,7 @@ class Markov(CogHelper):
         self.db_session.add(new_markov)
         self.db_session.commit()
         self.logger.info(f'Adding new markov channel {ctx.channel.id} from server {ctx.guild.id}')
-
+        self.lock.release()
         return await ctx.send('Markov turned on for channel')
 
     @markov.command(name='off')
@@ -279,6 +294,7 @@ class Markov(CogHelper):
         '''
         Turn markov off for channel
         '''
+        self.lock.acquire()
         # Ensure channel not already on
         markov_channel = self.db_session.query(MarkovChannel).\
             filter(MarkovChannel.channel_id == str(ctx.channel.id)).\
@@ -291,6 +307,7 @@ class Markov(CogHelper):
         self._delete_channel_words(markov_channel.id)
         self.db_session.delete(markov_channel)
         self.db_session.commit()
+        self.lock.release()
         return await ctx.send('Markov turned off for channel')
 
     @markov.command(name='speak')
@@ -308,6 +325,7 @@ class Markov(CogHelper):
         Note that for first_word, multiple words can be given, but they must be in quotes
         Ex: !markov speak "hey whats up", or !markov speak "hey whats up" 64
         '''
+        self.lock.acquire()
         all_words = []
         first = None
         if first_word:
@@ -387,4 +405,5 @@ class Markov(CogHelper):
             word = choices(possible_words, weights=weights)[0]
             all_words.append(word)
             count += 1
+        self.lock.release()
         return await ctx.send(' '.join(markov_word for markov_word in all_words))
