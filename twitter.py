@@ -126,6 +126,8 @@ class Twitter(CogHelper):
                 subscription_filters = self.db_session.query(TwitterSubscriptionFilter).\
                                             filter(TwitterSubscriptionFilter.twitter_subscription_id == subscription.id)
                 await self._check_subscription(subscription, subscription_filters)
+                # Sleep after each iteration so other tasks can proceed
+                await asyncio.sleep(1)
             await asyncio.sleep(300)
 
     @commands.group(name='twitter', invoke_without_command=False)

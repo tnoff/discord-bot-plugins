@@ -78,9 +78,7 @@ class RoleAssignment(CogHelper):
         message_cache = {}
         role_cache = {}
 
-
         # TODO delete messages after some amount of time
-
 
         while not self.bot.is_closed():
             # Go through each saved message in database
