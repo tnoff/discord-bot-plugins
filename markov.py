@@ -78,7 +78,6 @@ class MarkovChannel(BASE):
     channel_id = Column(String(128))
     server_id = Column(String(128))
     last_message_id = Column(String(128))
-    is_private = Column(Boolean)
 
 class MarkovRelation(BASE):
     '''
@@ -153,6 +152,9 @@ class Markov(CogHelper):
         '''
         Our main loop.
         '''
+        await self.retry_command(self.__wait_loop)
+
+    async def __wait_loop(self):
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
@@ -236,15 +238,13 @@ class Markov(CogHelper):
             await ctx.send('Invalid sub command passed...')
 
     @markov.command(name='on')
-    async def on(self, ctx, channel_type: Optional[str] = 'public'):
+    async def on(self, ctx):
         '''
         Turn markov on for channel
-        channel_type    :   Either "private" or "public", will be "public" by default
         '''
-        if channel_type.lower() not in ['public', 'private']:
-            return await ctx.send(f'Invalid channel type "{channel_type}"')
-        is_private = channel_type.lower() == 'private'
+        return await self.retry_command(self.__on, ctx)
 
+    async def __on(self, ctx):
         await self.acquire_lock()
         # Ensure channel not already on
         markov = self.db_session.query(MarkovChannel).\
@@ -252,10 +252,6 @@ class Markov(CogHelper):
             filter(MarkovChannel.server_id == str(ctx.guild.id)).first()
 
         if markov:
-            if is_private != markov.is_private:
-                markov.is_private = is_private
-                self.db_session.commit()
-                return await ctx.send(f'Updating channel type to {channel_type.lower()}')
             return await ctx.send('Channel already has markov turned on')
 
         channel = await self.bot.fetch_channel(ctx.channel.id)
@@ -264,19 +260,22 @@ class Markov(CogHelper):
 
         new_markov = MarkovChannel(channel_id=str(ctx.channel.id),
                                    server_id=str(ctx.guild.id),
-                                   last_message_id=None,
-                                   is_private=is_private)
+                                   last_message_id=None)
         self.db_session.add(new_markov)
         self.db_session.commit()
         self.logger.info(f'Adding new markov channel {ctx.channel.id} from server {ctx.guild.id}')
         await self.release_lock()
         return await ctx.send('Markov turned on for channel')
 
+
     @markov.command(name='off')
     async def off(self, ctx):
         '''
         Turn markov off for channel
         '''
+        return await self.retry_command(self._off, ctx)
+
+    async def __off(self, ctx):
         await self.acquire_lock()
         # Ensure channel not already on
         markov_channel = self.db_session.query(MarkovChannel).\
@@ -308,6 +307,9 @@ class Markov(CogHelper):
         Note that for first_word, multiple words can be given, but they must be in quotes
         Ex: !markov speak "hey whats up", or !markov speak "hey whats up" 64
         '''
+        return await self.retry_command(self.__speak, ctx, first_word, sentence_length)
+
+    async def __speak(self, ctx, first_word, sentence_length):
         await self.acquire_lock()
         all_words = []
         first = None
@@ -325,27 +327,11 @@ class Markov(CogHelper):
             filter(MarkovChannel.channel_id == str(ctx.channel.id)).\
             filter(MarkovChannel.server_id == str(ctx.guild.id)).first()
 
-        # Find first word, first get query of either all channels in server, or just
-        # single channel
-
-        # First get results from all public channels
         query = self.db_session.query(MarkovRelation.id).\
                     join(MarkovChannel, MarkovChannel.id == MarkovRelation.channel_id).\
-                    filter(MarkovChannel.server_id == str(ctx.guild.id)).\
-                    filter(MarkovChannel.is_private == False)
+                    filter(MarkovChannel.server_id == str(ctx.guild.id))
         if first:
             query = query.filter(MarkovRelation.leader_word == first)
-
-        # If within a private channel, add this channels results to query
-        if markov_channel and markov_channel.is_private:
-            # Results either come from this private channel
-            # or from another public channel within server
-            second_query = leader_ids.union(self.db_session(MarkovRelation.id).\
-                            join(MarkovChannel, MarkovChannel.id == MarkovRelation.channel_id).\
-                            filter(MarkovRelation.channel_id == markov_channel.id))
-            if first:
-                second_query = second_query.filter(MarkovRelation.leader_word == first)
-            query = query.union(second_query)
 
         possible_words = [word[0] for word in query]
         if len(possible_words) == 0:
@@ -357,23 +343,12 @@ class Markov(CogHelper):
         all_words.append(word)
 
         # Save a cache layer to reduce db calls
-        follower_cache = {}
         for _ in range(sentence_length + 1):
             # Get all leader ids first so you can pass it in
-            # First get all leader ids from public channels
             leader_ids = self.db_session.query(MarkovRelation.id).\
                     join(MarkovChannel, MarkovChannel.id == MarkovRelation.channel_id).\
                     filter(MarkovChannel.server_id == str(ctx.guild.id)).\
-                    filter(MarkovChannel.is_private == False).\
                     filter(MarkovRelation.leader_word == word)
-            # If current channel is private, add this channels results to query
-            if markov_channel and markov_channel.is_private:
-                # Results either come from this private channel
-                # or from another public channel within server
-                leader_ids = leader_ids.union(self.db_session.query(MarkovRelation.id).\
-                    filter(MarkovRelation.channel_id == markov_channel.id).\
-                    filter(MarkovChannel.server_id == str(ctx.guild.id)).\
-                    filter(MarkovRelation.leader_word == word))
 
             possible_words = []
             weights = []

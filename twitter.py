@@ -13,6 +13,7 @@ from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
 from discord_bot.exceptions import CogMissingRequiredArg
 
+
 REQUIRED_ARGS = [
     'twitter_consumer_key',
     'twitter_consumer_secret',
@@ -59,7 +60,7 @@ class Twitter(CogHelper):
                 raise CogMissingRequiredArg(f'Twitter cog missing required key {key}')
         self.twitter_api = None
         self._restart_client()
-        self.bot.loop.create_task(self.wait_loop())
+        self.bot.loop.create_task(self.main_loop())
 
     def _restart_client(self):
         self.logger.debug('Reloading twitter client')
@@ -113,10 +114,13 @@ class Twitter(CogHelper):
         subscription.last_post = timeline[0].id
         self.db_session.commit()
 
-    async def wait_loop(self):
+    async def main_loop(self):
         '''
-        Our main player loop.
+        Our main loop.
         '''
+        return await self.retry_command(self.__main_loop)
+
+    async def __main_loop(self):
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
@@ -138,6 +142,7 @@ class Twitter(CogHelper):
         if ctx.invoked_subcommand is None:
             await ctx.send('Invalid sub command passed...')
 
+
     @twitter.command(name='subscribe')
     async def subscribe(self, ctx, twitter_account, show_all_posts: typing.Optional[str] = ''):
         '''
@@ -146,6 +151,9 @@ class Twitter(CogHelper):
         twitter_account :   Twitter account name to subscribe to
         show_all_posts  :   To show all posts, including retweets and replies use "show-all"
         '''
+        return await self.retry_command(self.__subscribe, ctx, twitter_account, show_all_posts)
+
+    async def __subscribe(self, ctx, twitter_account, show_all_posts):
         # Strip twitter.com lead from string
         twitter_account = twitter_account.replace('https://twitter.com/', '')
         twitter_account = twitter_account.rstrip('/')
@@ -190,11 +198,15 @@ class Twitter(CogHelper):
         self.db_session.commit()
         return await ctx.send(f'Subscribed channel to twitter user {twitter_account}')
 
+
     @twitter.command(name='unsubscribe')
     async def unsubscribe(self, ctx, twitter_account):
         '''
         Unsubscribe channel from twitter account
         '''
+        return await self.retry_command(self.__unsubscribe, ctx, twitter_account)
+
+    async def __unsubscribe(self, ctx, twitter_account):
         twitter_account = twitter_account.replace('https://twitter.com/', '')
         twitter_account = twitter_account.rstrip('/')
         self.logger.debug(f'Attempting to unsubscribe from username: {twitter_account} '
@@ -223,6 +235,9 @@ class Twitter(CogHelper):
         '''
         List channel subscriptions
         '''
+        return await self.retry_command(self.__subscribe_list, ctx)
+
+    async def __subscribe_list(self, ctx):
         subscriptions = self.db_session.query(TwitterSubscription).\
                             filter(TwitterSubscription.channel_id == str(ctx.channel.id))
         screen_names = []
@@ -237,7 +252,6 @@ class Twitter(CogHelper):
         message = '\n'.join(name for name in screen_names)
         return await ctx.send(f'```Subscribed to \n{message}```')
 
-
     @twitter.command(name='add-filter')
     async def add_filter(self, ctx, twitter_account, regex_filter):
         '''
@@ -246,6 +260,9 @@ class Twitter(CogHelper):
         twitter_account :   Twitter account name to add filter to, must already be subscribed
         regex_filter    :   Python regex filter, only posts that match filter will be shown
         '''
+        return await self.retry_command(self.__add_filter, ctx, twitter_account, regex_filter)
+
+    async def __add_filter(self, ctx, twitter_account, regex_filter):
         # Strip twitter.com lead from string
         twitter_account = twitter_account.replace('https://twitter.com/', '')
         self.logger.debug(f'Attempting to add filter "{regex_filter}" to subscription "{twitter_account}"')
@@ -288,6 +305,9 @@ class Twitter(CogHelper):
         twitter_account :   Twitter account name to remove filter from, must already be subscribed
         regex_filter    :   Python regex filter
         '''
+        return await self.retry_command(self.__remove_filter, ctx, twitter_account, regex_filter)
+
+    async def __remove_filter(self, ctx, twitter_account, regex_filter):
         # Strip twitter.com lead from string
         twitter_account = twitter_account.replace('https://twitter.com/', '')
         self.logger.debug(f'Attempting to remote filter "{regex_filter}" to subscription "{twitter_account}"')
@@ -317,6 +337,9 @@ class Twitter(CogHelper):
 
         twitter_account :   Twitter account name to list filters for, must already be subscribed
         '''
+        return await self.retry_command(self.__list_filters, ctx, twitter_account)
+
+    async def __list_filters(self, ctx, twitter_account):
         # Strip twitter.com lead from string
         twitter_account = twitter_account.replace('https://twitter.com/', '')
         try:

@@ -8,6 +8,7 @@ from sqlalchemy import ForeignKey
 from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
 
+
 EMOJI_MAPPING = {
     '\u0030\ufe0f\u20e3': ':zero:',
     '\u0031\ufe0f\u20e3': ':one:',
@@ -67,12 +68,15 @@ class RoleAssignment(CogHelper):
         super().__init__(bot, db_engine, logger, settings)
         BASE.metadata.create_all(self.db_engine)
         BASE.metadata.bind = self.db_engine
-        self.bot.loop.create_task(self.player_loop())
+        self.bot.loop.create_task(self.main_loop())
 
-    async def player_loop(self):
+    async def main_loop(self):
         '''
         Our main player loop.
         '''
+        return await self.retry_command(self.__main_loop)
+
+    async def __main_loop(self):
         await self.bot.wait_until_ready()
 
         message_cache = {}
@@ -146,6 +150,9 @@ class RoleAssignment(CogHelper):
         Generate message with all roles.
         Users can reply to this message to add roles to themselves.
         '''
+        return await self.retry_command(self.__roles, ctx)
+
+    async def __roles(self, ctx):
         self.logger.debug(f'Setting up message for role grants in server {ctx.guild.id}')
         index = 0
         message_strings = []
