@@ -1,0 +1,2 @@
+python-twitter>=3.5
+yt-dlp>=2021.10.10

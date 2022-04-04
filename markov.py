@@ -9,12 +9,9 @@ from typing import Optional
 from discord import TextChannel
 from discord.ext import commands
 from discord.errors import NotFound
-from sqlalchemy import and_
-from sqlalchemy import Boolean, Column, DateTime, Integer, String
+from sqlalchemy import Column, DateTime, Integer, String
 from sqlalchemy import ForeignKey, UniqueConstraint
 from sqlalchemy import func
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import relationship
 
 from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
@@ -102,11 +99,14 @@ class Markov(CogHelper):
         if 'markov_history_rention_days' not in settings:
             self.settings['markov_history_rention_days'] = MARKOV_HISTORY_RETENTION_DAYS
 
-        self.lock_file = Path(NamedTemporaryFile(delete=False).name)
+        self.lock_file = Path(NamedTemporaryFile(delete=False).name) #pylint:disable=consider-using-with
 
         self.bot.loop.create_task(self.wait_loop())
 
     async def acquire_lock(self, timeout=600):
+        '''
+        Wait for and acquire lock
+        '''
         start = datetime.now()
         while True:
             if (datetime.now() - start).seconds > timeout:
@@ -117,6 +117,9 @@ class Markov(CogHelper):
         self.lock_file.write_text('locked')
 
     async def release_lock(self):
+        '''
+        Release lock
+        '''
         self.lock_file.write_text('unlocked')
 
     def __ensure_word(self, word):
@@ -273,7 +276,7 @@ class Markov(CogHelper):
         '''
         Turn markov off for channel
         '''
-        return await self.retry_command(self._off, ctx)
+        return await self.retry_command(self.__off, ctx)
 
     async def __off(self, ctx):
         await self.acquire_lock()
@@ -322,10 +325,6 @@ class Markov(CogHelper):
                 all_words.append(start_words.lower())
             first = starting_words[-1].lower()
 
-        # First check is channel is private
-        markov_channel = self.db_session.query(MarkovChannel).\
-            filter(MarkovChannel.channel_id == str(ctx.channel.id)).\
-            filter(MarkovChannel.server_id == str(ctx.guild.id)).first()
 
         query = self.db_session.query(MarkovRelation.id).\
                     join(MarkovChannel, MarkovChannel.id == MarkovRelation.channel_id).\

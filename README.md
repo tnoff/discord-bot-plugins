@@ -19,3 +19,7 @@ Can only assign roles with 0 permissions.
 Twitter message bot.
 
 Monitor twitter feeds and post new messages from accounts.
+
+## Music
+
+Play music via voice chat.
