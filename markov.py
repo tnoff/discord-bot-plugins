@@ -112,7 +112,7 @@ class Markov(CogHelper):
             if (datetime.now() - start).seconds > timeout:
                 raise Exception('Error acquiring markov lock')
             if self.lock_file.read_text() == 'locked':
-                await sleep(1)
+                await sleep(.01)
             break
         self.lock_file.write_text('locked')
 
@@ -220,7 +220,7 @@ class Markov(CogHelper):
                     self.db_session.commit()
                 self.logger.debug(f'Done with channel {markov_channel.channel_id}')
                 await self.release_lock()
-                await sleep(1) # Sleep one second just in case someone called a command
+                await sleep(.01) # Sleep one second just in case someone called a command
 
             # Clean up old messages
             await self.acquire_lock()
