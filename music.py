@@ -170,15 +170,27 @@ def get_queue_message(queue):
     header = f'```{"Pos":3} || {"Queue Time":10} || {"Title":48} || {"Uploader":16}```'
     return [header] + table_strings
 
+def get_finished_path(file_path):
+    '''
+    Get 'finished path' for edited file
+    '''
+    return file_path.parent / (file_path.stem + '.finished.mp3')
+
+def get_editing_path(file_path):
+    '''
+    Get 'editing path' for editing files
+    '''
+    return file_path.parent / (file_path.stem + '.edited.mp3')
+
 def remove_file_path(file_path):
     '''
     If file path exists, remove, but check if still being edited just in case
     '''
     if file_path.exists():
-        finished_path = file_path.parent / (file_path.stem + '.finished.mp3')
+        finished_path = get_finished_path(file_path)
         if finished_path.exists():
             finished_path.unlink()
-        if not (file_path.parent / (file_path.stem + '.edited.mp3')).exists():
+        if not get_editing_path(file_path).exists():
             file_path.unlink()
 
 class YTDLClient():
@@ -233,7 +245,7 @@ class YTDLClient():
             data_entries = data_entries['entries']
             if not direct_search:
                 data_entries = [data_entries[0]]
-    
+
         # Do a quick check if its a dict type, sometimes a direct search will not be a list
         if isinstance(data_entries, dict):
             data_entries = [data_entries]
@@ -317,9 +329,10 @@ class MusicPlayer:
 
             self.current_path = source_dict['file_path']
             # Check if edited "finished" file exists
-            if (source_dict['file_path'].parent / (source_dict['file_path'].stem + '.finished.mp3')).exists():
+            finished_path = get_finished_path(source_dict['file_path'])
+            if finished_path.exists():
                 source_dict['file_path'].unlink()
-                source_dict['file_path'] = source_dict['file_path'].parent / (source_dict['file_path'].stem + '.finished.mp3')
+                source_dict['file_path'] = finished_path
 
             # Double check file didnt go away
             if not source_dict['file_path'].exists():
@@ -351,10 +364,8 @@ class MusicPlayer:
 
             # Make sure the FFmpeg process is cleaned up.
             source.cleanup()
-            if source_dict['file_path'].exists():
-                # If still being edited, dont delete original, leave for later
-                if not (source_dict['file_path'].parent / (source_dict['file_path'].stem + '.edited.mp3')).exists():
-                    source_dict['file_path'].unlink()
+            if not get_editing_path(source_dict['file_path']).exists():
+                source_dict['file_path'].unlink()
             self.current_path = None
 
             try:
@@ -431,11 +442,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.bot.loop.create_task(self.modify_files(self.bot.loop))
 
     def __edit_audio_file(self, file_path):
-        finished_path = file_path.parent / (file_path.stem + '.finished.mp3')
+        finished_path = get_finished_path(file_path)
         if finished_path.exists():
             self.logger.warning(f'Finished path "{str(finished_path)}" already exists, skipping')
             return finished_path
-        editing_path = file_path.parent / (file_path.stem + '.edited.mp3')
+        editing_path = get_editing_path(file_path)
         try:
             edited_audio = AudioFileClip(str(file_path)).fx(afx.audio_normalize) #pylint:disable=no-member
             edited_audio.write_audiofile(str(editing_path))
@@ -479,7 +490,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 # Check if file being used by any player
                 should_skip = False
                 for guild_id, player in self.players.items():
-                    if player.current_path.resolve() == file_path.resolve():
+                    if player.current_path is None:
+                        continue
+                    if str(player.current_path.resolve()) == str(file_path.resolve()):
                         should_skip = True
                         self.logger.warning(f'Ignoring file "{str(file_path)}", being used in player in guild "{guild_id}"')
                         break
