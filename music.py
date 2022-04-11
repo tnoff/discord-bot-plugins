@@ -1,6 +1,6 @@
 import asyncio
 from copy import deepcopy
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 import random
@@ -198,27 +198,26 @@ class YTDLClient():
         '''
         return self.__getattribute__(item)
 
-    async def create_source(self, ctx, search: str, *, loop, max_song_length=None, download=True):
+    async def create_source(self, ctx, search, loop, max_song_length=None, download=True):
         '''
         Create source from youtube search
         '''
         loop = loop or asyncio.get_event_loop()
         self.logger.info(f'{ctx.author} playing song with search {search}')
-        # If playlist url passed directly
-        direct_playlist_search = 'playlist?list=' in search
         to_run = partial(self.prepare_data_source, search=search, guild_id=ctx.guild.id,
                          max_song_length=max_song_length, requester=ctx.author,
-                         direct_playlist_search=direct_playlist_search, download=download)
+                         download=download)
         return await loop.run_in_executor(None, to_run)
 
-    def prepare_data_source(self, search, guild_id, max_song_length, requester, direct_playlist_search, download):
+    def prepare_data_source(self, search, guild_id, max_song_length, requester, download):
         '''
         Prepare source from youtube url
         '''
         options = deepcopy(self.ytdl_options)
         guild_path = self.download_dir / f'{guild_id}'
         guild_path.mkdir(exist_ok=True, parents=True)
-        options['outtmpl']  = str(guild_path / '%(extractor)s-%(id)s-%(title)s.%(ext)s')
+        # Add datetime to output here to account for playing same song multiple times
+        options['outtmpl']  = str(guild_path / f'{int(datetime.now().timestamp())}.%(extractor)s-%(id)s-%(title)s.%(ext)s')
         ytdl = YoutubeDL(options)
         # Check song length before we download
         try:
@@ -226,16 +225,25 @@ class YTDLClient():
         except DownloadError:
             self.logger.error(f'Error downloading youtube search {search}')
             return None
+
+        # We dont want to grab a full playlist of results, unless a specific playlist is passed
+        # Easiest way to check this is if the search passed in used youtube urls directly
+        direct_search = 'https://www.youtube.com' in search or 'https://youtu.be' in search
         if 'entries' in data_entries:
             data_entries = data_entries['entries']
-            if not direct_playlist_search:
+            if not direct_search:
                 data_entries = [data_entries[0]]
+    
+        # Do a quick check if its a dict type, sometimes a direct search will not be a list
+        if isinstance(data_entries, dict):
+            data_entries = [data_entries]
 
         if not download:
             return data_entries
 
         return_data = []
         for data in data_entries:
+            # If song too long, skip
             if data['duration'] > max_song_length:
                 return_data.append(data)
                 continue
@@ -312,6 +320,11 @@ class MusicPlayer:
             if (source_dict['file_path'].parent / (source_dict['file_path'].stem + '.finished.mp3')).exists():
                 source_dict['file_path'].unlink()
                 source_dict['file_path'] = source_dict['file_path'].parent / (source_dict['file_path'].stem + '.finished.mp3')
+
+            # Double check file didnt go away
+            if not source_dict['file_path'].exists():
+                await self._channel.send(f'Unable to play "{source_dict["title"]}", local file dissapeared')
+                continue
 
             source = FFmpegPCMAudio(str(source_dict['file_path']))
 
@@ -802,7 +815,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         item = player.queue.bump_item(queue_index)
         if item is None:
-            return ctx.send(f'Unable to bump queue index {queue_index}',
+            return await ctx.send(f'Unable to bump queue index {queue_index}',
                             delete_after=self.delete_after)
         await ctx.send(f'Bumped item {item["title"]} to top of queue',
                        delete_after=self.delete_after)
