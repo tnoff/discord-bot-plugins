@@ -607,6 +607,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                   delete_after=self.delete_after)
 
         source_dicts = await self.ytdl.create_source(ctx, search, loop=self.bot.loop, max_song_length=self.max_song_length)
+        if source_dicts is None:
+            return await ctx.send(f'Unable to find youtube source ' \
+                                  f'for "{search}"',
+                                  delete_after=self.delete_after)
         for source_dict in source_dicts:
             if source_dict is None:
                 await ctx.send(f'Unable to find youtube source for "{search}"',
@@ -919,6 +923,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         '''
         List playlists.
         '''
+        return await self.retry_command(self.__playlist_list, ctx)
+
+    async def __playlist_list(self, ctx):
         if not await self.__check_database_session(ctx):
             return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
         playlist_items = self.db_session.query(Playlist).\
@@ -961,6 +968,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             The song to search and retrieve from youtube.
             This could be a simple search, an ID or URL.
         '''
+        return await self.retry_command(self.__playlist_item_add, ctx, playlist_index, search)
+
+    async def __playlist_item_add(self, ctx, playlist_index, search):
         if not await self.__check_database_session(ctx):
             return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
 
@@ -989,6 +999,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         song_index: integer [Required]
             ID of song to remove
         '''
+        return await self.retry_command(self.__playlist_item_remove, ctx, playlist_index, song_index)
+
+    async def __playlist_item_remove(self, ctx, playlist_index, song_index):
         if not await self.__check_database_session(ctx):
             return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
 
@@ -1025,6 +1038,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         playlist_index: integer [Required]
             ID of playlist
         '''
+        return await self.retry_command(self.__playlist_show, ctx, playlist_index)
+
+    async def __playlist_show(self, ctx, playlist_index):
         if not await self.__check_database_session(ctx):
             return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
 
@@ -1061,6 +1077,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         playlist_index: integer [Required]
             ID of playlist
         '''
+        return await self.retry_command(self.__playlist_delete, ctx, playlist_index)
+
+    async def __playlist_delete(self, ctx, playlist_index):
         if not await self.__check_database_session(ctx):
             return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
 
@@ -1084,6 +1103,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         playlist_name: str [Required]
             New name of playlist
         '''
+        return await self.retry_command(self.__playlist_rename, ctx, playlist_index, playlist_name)
+
+    async def __playlist_rename(self, ctx, playlist_index, playlist_name):
         if not await self.__check_database_session(ctx):
             return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
 
@@ -1102,6 +1124,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         name: str [Required]
             Name of new playlist to create
         '''
+        return await self.retry_command(self.__playlist_queue_save, ctx, name)
+
+    async def __playlist_queue_save(self, ctx, name):
         playlist = await self.__playlist_create(ctx, name)
         if not playlist:
             return None
@@ -1129,6 +1154,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         Sub commands - [shuffle]
             shuffle - Shuffle playlist when entering it into queue
         '''
+        return await self.retry_command(self.__playlist_queue, ctx, playlist_index, sub_command)
+
+    async def __playlist_queue(self, ctx, playlist_index, sub_command):
         if not await self.__check_database_session(ctx):
             return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
 
@@ -1166,6 +1194,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             source_dicts = await self.ytdl.create_source(ctx, f'{item.video_id}',
                                                          loop=self.bot.loop,
                                                          max_song_length=self.max_song_length)
+            if source_dicts is None:
+                await ctx.send(f'Unable to find youtube source ' \
+                               f'for "{item.title}", "{item.video_id}"',
+                               delete_after=self.delete_after)
+                continue
             for source_dict in source_dicts:
                 if source_dict is None:
                     await ctx.send(f'Unable to find youtube source ' \
