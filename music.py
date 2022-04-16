@@ -210,33 +210,34 @@ class YTDLClient():
         '''
         return self.__getattribute__(item)
 
-    async def create_source(self, ctx, search, loop, max_song_length=None, download=True):
+    async def create_source(self, ctx, source_dict, loop):
+        '''
+        Download data from youtube search
+        '''
+        to_run = partial(self.__prepare_data_source, source_dict=source_dict, guild_id=ctx.guild.id,
+                         requester=ctx.author)
+        return await loop.run_in_executor(None, to_run)
+
+    async def check_source(self, ctx, search, loop):
         '''
         Create source from youtube search
         '''
-        loop = loop or asyncio.get_event_loop()
         self.logger.info(f'{ctx.author} playing song with search {search}')
-        to_run = partial(self.prepare_data_source, search=search, guild_id=ctx.guild.id,
-                         max_song_length=max_song_length, requester=ctx.author,
-                         download=download)
+        to_run = partial(self.__check_data_source, search=search)
         return await loop.run_in_executor(None, to_run)
 
-    def prepare_data_source(self, search, guild_id, max_song_length, requester, download):
+    def __check_data_source(self, search):
         '''
-        Prepare source from youtube url
+        Check search results do not go past max song length
         '''
         options = deepcopy(self.ytdl_options)
-        guild_path = self.download_dir / f'{guild_id}'
-        guild_path.mkdir(exist_ok=True, parents=True)
-        # Add datetime to output here to account for playing same song multiple times
-        options['outtmpl']  = str(guild_path / f'{int(datetime.now().timestamp())}.%(extractor)s-%(id)s-%(title)s.%(ext)s')
         ytdl = YoutubeDL(options)
         # Check song length before we download
         try:
             data_entries = ytdl.extract_info(url=search, download=False)
         except DownloadError:
             self.logger.error(f'Error downloading youtube search {search}')
-            return None
+            return [None]
 
         # We dont want to grab a full playlist of results, unless a specific playlist is passed
         # Easiest way to check this is if the search passed in used youtube urls directly
@@ -246,34 +247,35 @@ class YTDLClient():
             if not direct_search:
                 data_entries = [data_entries[0]]
 
-        # Do a quick check if its a dict type, sometimes a direct search will not be a list
-        if isinstance(data_entries, dict):
+        if not isinstance(data_entries, list):
             data_entries = [data_entries]
+        return data_entries
 
-        if not download:
-            return data_entries
+    def __prepare_data_source(self, source_dict, guild_id, requester):
+        '''
+        Prepare source from youtube url
+        '''
+        options = deepcopy(self.ytdl_options)
+        guild_path = self.download_dir / f'{guild_id}'
+        guild_path.mkdir(exist_ok=True, parents=True)
+        # Add datetime to output here to account for playing same song multiple times
+        options['outtmpl']  = str(guild_path / f'{int(datetime.now().timestamp())}.%(extractor)s-%(id)s-%(title)s.%(ext)s')
+        ytdl = YoutubeDL(options)
 
-        return_data = []
-        for data in data_entries:
-            # If song too long, skip
-            if data['duration'] > max_song_length:
-                return_data.append(data)
-                continue
-            try:
-                data = ytdl.extract_info(url=data['webpage_url'], download=True)
-            except DownloadError:
-                self.logger.error(f'Error downloading youtube search {search}')
-                return_data.append(None)
-            self.logger.info(f'Starting download of video "{data["title"]}" from url "{data["webpage_url"]}"')
-            file_path = Path(ytdl.prepare_filename(data))
-            # The modified time of download videos can be the time when it was actually uploaded to youtube
-            # Touch here to update the modified time, so that the cleanup check works as intendend
-            file_path.touch(exist_ok=True)
-            self.logger.info(f'Downloaded url "{data["webpage_url"]} to file "{file_path}"')
-            data['requester'] = requester
-            data['file_path'] = file_path
-            return_data.append(data)
-        return return_data
+        try:
+            data = ytdl.extract_info(url=source_dict['webpage_url'], download=True)
+        except DownloadError:
+            self.logger.error(f'Error downloading youtube search "{source_dict["webpage_url"]}')
+            return None
+        self.logger.info(f'Starting download of video "{data["title"]}" from url "{data["webpage_url"]}"')
+        file_path = Path(ytdl.prepare_filename(data))
+        # The modified time of download videos can be the time when it was actually uploaded to youtube
+        # Touch here to update the modified time, so that the cleanup check works as intendend
+        file_path.touch(exist_ok=True)
+        self.logger.info(f'Downloaded url "{data["webpage_url"]} to file "{file_path}"')
+        data['requester'] = requester
+        data['file_path'] = file_path
+        return data
 
 
 class MusicPlayer:
@@ -293,11 +295,10 @@ class MusicPlayer:
         self._channel = ctx.channel
         self._cog = ctx.cog
         self.ytdl_options = ytdl_options
-        self.history_size = 10
 
         self.logger.info(f'Max length for music queue in guild {self._guild} is {queue_max_size}')
         self.queue = MyQueue(maxsize=queue_max_size)
-        self.history = MyQueue(maxsize=self.history_size)
+        self.history = MyQueue(maxsize=queue_max_size)
         self.next = asyncio.Event()
 
         self.np = None  # Now playing message
@@ -606,12 +607,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await ctx.send('Queue is full, cannot add more songs',
                                   delete_after=self.delete_after)
 
-        source_dicts = await self.ytdl.create_source(ctx, search, loop=self.bot.loop, max_song_length=self.max_song_length)
-        if source_dicts is None:
-            return await ctx.send(f'Unable to find youtube source ' \
-                                  f'for "{search}"',
-                                  delete_after=self.delete_after)
-        for source_dict in source_dicts:
+        source_infos = await self.ytdl.check_source(ctx, search, self.bot.loop)
+        for source_dict in source_infos:
             if source_dict is None:
                 await ctx.send(f'Unable to find youtube source for "{search}"',
                                delete_after=self.delete_after)
@@ -621,13 +618,13 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                f' to queue, exceeded max length '
                                f'{self.max_song_length} seconds')
                 continue
-
             try:
-                player.queue.put_nowait(source_dict)
-                self.logger.info(f'Adding "{source_dict["title"]}" '
+                source_download = await self.ytdl.create_source(ctx, source_dict, self.bot.loop)
+                player.queue.put_nowait(source_download)
+                self.logger.info(f'Adding "{source_download["title"]}" '
                                 f'to queue in guild {ctx.guild.id}')
-                await ctx.send(f'Added "{source_dict["title"]}" to queue. '
-                            f'"<{source_dict["webpage_url"]}>"',
+                await ctx.send(f'Added "{source_download["title"]}" to queue. '
+                            f'"<{source_download["webpage_url"]}>"',
                             delete_after=self.delete_after)
             except asyncio.QueueFull:
                 await ctx.send('Queue is full, cannot add more songs',
@@ -728,10 +725,21 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await ctx.send('There have been no songs played.',
                                   delete_after=self.delete_after)
 
-        history_strings = get_queue_message(player.history)
-        if history_strings is not None:
-            for table in history_strings:
-                await ctx.send(f'{table}', delete_after=self.delete_after)
+        items = []
+        for item in player.history._queue: #pylint:disable=protected-access
+            uploader = ''
+            if item['uploader'] is not None:
+                uploader = clean_string(item['uploader'], max_length=16)
+            items.append({
+                'title': clean_string(item['title']),
+                'uploader': clean_string(uploader),
+            })
+
+        tables = get_table_view(items)
+        header = f'```{"Pos":3} || {"Title":48} || {"Uploader":16}```'
+        await ctx.send(header, delete_after=self.delete_after)
+        for table in tables:
+            await ctx.send(table, delete_after=self.delete_after)
 
     @commands.command(name='shuffle')
     async def shuffle_(self, ctx):
@@ -978,7 +986,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not playlist:
             return None
 
-        source_dicts = await self.ytdl.create_source(ctx, search, loop=self.bot.loop, download=False)
+        source_dicts = await self.ytdl.check_source(ctx, search, self.bot.loop)
         for data in source_dicts:
             if data is None:
                 await ctx.send(f'Unable to find video for search {search}')
@@ -987,6 +995,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             playlist_item = self.__playlist_add_item(ctx, playlist, data)
             if playlist_item:
                 await ctx.send(f'Added item {data["title"]} to playlist {playlist_index}', delete_after=self.delete_after)
+                continue
             await ctx.send('Unable to add playlist item, likely already exists', delete_after=self.delete_after)
 
     @playlist.command(name='item-remove')
@@ -1114,7 +1123,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return None
         playlist.name = playlist_name
         self.db_session.commit()
-        return await ctx.send(f'Renamed playlist {playlist_index} to name {playlist_name}')
+        return await ctx.send(f'Renamed playlist {playlist_index} to name "{playlist_name}"')
 
     @playlist.command(name='queue-save')
     async def playlist_queue_save(self, ctx, *, name: str):
@@ -1139,10 +1148,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         for data in player.queue:
             playlist_item = self.__playlist_add_item(ctx, playlist, data)
             if playlist_item:
-                await ctx.send(f'Added item {data["title"]} to playlist', delete_after=self.delete_after)
+                await ctx.send(f'Added item "{data["title"]}" to playlist', delete_after=self.delete_after)
                 continue
-            await ctx.send(f'Unable to add playlist item {data["title"]}, likely already exists', delete_after=self.delete_after)
-        return await ctx.send(f'Finished adding queue items to playlist {name}')
+            await ctx.send(f'Unable to add playlist item "{data["title"]}", likely already exists', delete_after=self.delete_after)
+        return await ctx.send(f'Finished adding queue items to playlist "{name}"')
 
     @playlist.command(name='queue')
     async def playlist_queue(self, ctx, playlist_index, sub_command: typing.Optional[str] = ''): #pylint:disable=too-many-branches
@@ -1187,18 +1196,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             random.shuffle(playlist_items)
 
         for item in playlist_items:
-            if player.queue.full():
-                return await ctx.send('Queue is full, cannot add more songs',
-                                      delete_after=self.delete_after)
-
-            source_dicts = await self.ytdl.create_source(ctx, f'{item.video_id}',
-                                                         loop=self.bot.loop,
-                                                         max_song_length=self.max_song_length)
-            if source_dicts is None:
-                await ctx.send(f'Unable to find youtube source ' \
-                               f'for "{item.title}", "{item.video_id}"',
-                               delete_after=self.delete_after)
-                continue
+            source_dicts = await self.ytdl.check_source(ctx, f'{item.video_id}', self.bot.loop)
             for source_dict in source_dicts:
                 if source_dict is None:
                     await ctx.send(f'Unable to find youtube source ' \
@@ -1216,16 +1214,17 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                     f'{self.max_song_length} seconds', delete_after=self.delete_after)
                     continue
                 try:
-                    player.queue.put_nowait(source_dict)
-                    await ctx.send(f'Added "{source_dict["title"]}" to queue. '
-                                f'<{source_dict["webpage_url"]}>',
+                    source_download = await self.ytdl.create_source(ctx, source_dict, self.bot.loop)
+                    player.queue.put_nowait(source_download)
+                    await ctx.send(f'Added "{source_download["title"]}" to queue. '
+                                f'<{source_download["webpage_url"]}>',
                                 delete_after=self.delete_after)
                 except asyncio.QueueFull:
                     await ctx.send('Queue is full, cannot add more songs',
                                 delete_after=self.delete_after)
                     break
 
-        await ctx.send(f'Added all songs in playlist {playlist.name} to Queue',
+        await ctx.send(f'Added all songs in playlist "{playlist.name}" to queue',
                        delete_after=self.delete_after)
 
         # Reset queue messages
