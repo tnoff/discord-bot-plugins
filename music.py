@@ -948,12 +948,12 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             table = f'{table}{count +1:3} || {clean_string(playlist.name):64}\n'
         return await ctx.send(f'```{table}```', delete_after=self.delete_after)
 
-    def __playlist_add_item(self, ctx, playlist, data):
-        self.logger.info(f'Adding video_id {data["id"]} to playlist {playlist.id} '
+    def __playlist_add_item(self, ctx, playlist, data_id, data_title, data_uploader):
+        self.logger.info(f'Adding video_id {data_id} to playlist {playlist.id} '
                          f' in guild {ctx.guild.id}')
-        playlist_item = PlaylistItem(title=clean_string(data['title'], max_length=256),
-                                     video_id=data['id'],
-                                     uploader=clean_string(data['uploader'], max_length=256),
+        playlist_item = PlaylistItem(title=clean_string(data_title, max_length=256),
+                                     video_id=data_id,
+                                     uploader=clean_string(data_uploader, max_length=256),
                                      playlist_id=playlist.id)
         try:
             self.db_session.add(playlist_item)
@@ -992,9 +992,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 await ctx.send(f'Unable to find video for search {search}')
             self.logger.info(f'Adding video_id {data["id"]} to playlist {playlist.id} '
                             f' in guild {ctx.guild.id}')
-            playlist_item = self.__playlist_add_item(ctx, playlist, data)
+            playlist_item = self.__playlist_add_item(ctx, playlist, data['id'], data['title'], data['uploader'])
             if playlist_item:
-                await ctx.send(f'Added item {data["title"]} to playlist {playlist_index}', delete_after=self.delete_after)
+                await ctx.send(f'Added item "{data["title"]}" to playlist {playlist_index}', delete_after=self.delete_after)
                 continue
             await ctx.send('Unable to add playlist item, likely already exists', delete_after=self.delete_after)
 
@@ -1095,6 +1095,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
             return None
+        self.logger.info(f'Deleting playlist {playlist.id}')
         self.db_session.query(PlaylistItem).\
             filter(PlaylistItem.playlist_id == playlist.id).delete()
         self.db_session.delete(playlist)
@@ -1125,7 +1126,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.db_session.commit()
         return await ctx.send(f'Renamed playlist {playlist_index} to name "{playlist_name}"')
 
-    @playlist.command(name='queue-save')
+    @playlist.command(name='save-queue')
     async def playlist_queue_save(self, ctx, *, name: str):
         '''
         Save contents of queue to a new playlist
@@ -1135,7 +1136,17 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         '''
         return await self.retry_command(self.__playlist_queue_save, ctx, name)
 
-    async def __playlist_queue_save(self, ctx, name):
+    @playlist.command(name='save-history')
+    async def playlist_history_save(self, ctx, *, name: str):
+        '''
+        Save contents of history to a new playlist
+
+        name: str [Required]
+            Name of new playlist to create
+        '''
+        return await self.retry_command(self.__playlist_queue_save, ctx, name, is_history=True)
+
+    async def __playlist_queue_save(self, ctx, name, is_history=False):
         playlist = await self.__playlist_create(ctx, name)
         if not playlist:
             return None
@@ -1145,13 +1156,17 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await ctx.send('There are currently no more queued songs.',
                                   delete_after=self.delete_after)
 
-        for data in player.queue:
-            playlist_item = self.__playlist_add_item(ctx, playlist, data)
+        queue = player.queue
+        if is_history:
+            queue = player.history
+
+        for data in queue._queue: #pylint:disable=protected-access
+            playlist_item = self.__playlist_add_item(ctx, playlist, data['id'], data['title'], data['uploader'])
             if playlist_item:
                 await ctx.send(f'Added item "{data["title"]}" to playlist', delete_after=self.delete_after)
                 continue
             await ctx.send(f'Unable to add playlist item "{data["title"]}", likely already exists', delete_after=self.delete_after)
-        return await ctx.send(f'Finished adding queue items to playlist "{name}"')
+        return await ctx.send(f'Finished adding items to playlist "{name}"')
 
     @playlist.command(name='queue')
     async def playlist_queue(self, ctx, playlist_index, sub_command: typing.Optional[str] = ''): #pylint:disable=too-many-branches
@@ -1239,3 +1254,35 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if player.queue_strings is not None:
             for table in player.queue_strings:
                 player.queue_messages.append(await ctx.send(table))
+
+    @playlist.command(name='merge')
+    async def playlist_merge(self, ctx, playlist_index_one, playlist_index_two):
+        '''
+        Merge second playlist into first playlist, deletes second playlist
+
+        playlist_index_one: integer [Required]
+            ID of playlist to be merged, will be kept
+        playlist_index_two: integer [Required]
+            ID of playlist to be merged, will be deleted
+        '''
+        return await self.retry_command(self.__playlist_merge, ctx, playlist_index_one, playlist_index_two)
+
+    async def __playlist_merge(self, ctx, playlist_index_one, playlist_index_two):
+        if not await self.__check_database_session(ctx):
+            return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
+
+        playlist_one = await self.__get_playlist(playlist_index_one, ctx)
+        playlist_two = await self.__get_playlist(playlist_index_two, ctx)
+        if not playlist_one:
+            return ctx.send(f'Cannot find playlist {playlist_index_one}', delete=self.delete_after)
+        if not playlist_two:
+            return ctx.send(f'Cannot find playlist {playlist_index_two}', delete=self.delete_after)
+        query = self.db_session.query(PlaylistItem).\
+            filter(PlaylistItem.playlist_id == playlist_two.id)
+        for item in query:
+            playlist_item = self.__playlist_add_item(ctx, playlist_one, item.video_id, item.title, item.uploader)
+            if playlist_item:
+                await ctx.send(f'Added item "{item.title}" to playlist {playlist_index_one}', delete_after=self.delete_after)
+                continue
+            await ctx.send('Unable to add playlist item, likely already exists', delete_after=self.delete_after)
+        await self.__playlist_delete(ctx, playlist_index_two)
