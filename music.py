@@ -974,7 +974,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             current_index += max_rows
             if current_index >= len(playlist_items):
                 break
-        await ctx.send(f'```{"ID":3} || {"Playlist Name":32} || {"Last Queued":17}```')
+        await ctx.send(f'```{"ID":3} || {"Playlist Name":32} || {"Last Queued":17}```',
+                       delete_after=self.delete_after)
         for table in table_strings:
             await ctx.send(f'{table}', delete_after=self.delete_after)
 
