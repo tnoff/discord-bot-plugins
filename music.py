@@ -193,6 +193,21 @@ def remove_file_path(file_path):
         if not get_editing_path(file_path).exists():
             file_path.unlink()
 
+def edit_audio_file(file_path):
+    '''
+    Normalize audio for file
+    '''
+    finished_path = get_finished_path(file_path)
+    editing_path = get_editing_path(file_path)
+    try:
+        edited_audio = AudioFileClip(str(file_path)).fx(afx.audio_normalize) #pylint:disable=no-member
+        edited_audio.write_audiofile(str(editing_path))
+        editing_path.rename(finished_path)
+        return finished_path
+    except OSError:
+        # File likely was deleted in middle
+        return None
+
 class YTDLClient():
     '''
     Youtube DL Source
@@ -442,21 +457,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.ytdl_options = ytdlopts
         self.bot.loop.create_task(self.modify_files(self.bot.loop))
 
-    def __edit_audio_file(self, file_path):
-        finished_path = get_finished_path(file_path)
-        if finished_path.exists():
-            self.logger.warning(f'Finished path "{str(finished_path)}" already exists, skipping')
-            return finished_path
-        editing_path = get_editing_path(file_path)
-        try:
-            edited_audio = AudioFileClip(str(file_path)).fx(afx.audio_normalize) #pylint:disable=no-member
-            edited_audio.write_audiofile(str(editing_path))
-            editing_path.rename(finished_path)
-            return finished_path
-        except OSError:
-            # File likely was deleted in middle
-            return None
-
     async def modify_files(self, loop):
         '''
         Go through a loop of all files, in order from old to new
@@ -469,9 +469,18 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         while not self.bot.is_closed():
             loop = loop or asyncio.get_event_loop()
             self.logger.debug('Attempting to edit music files')
+            # Sort files by modified time, currently puts newer files at beginning of list
+            file_listing = []
             for file_path in self.download_dir.glob('**/*'):
                 if file_path.is_dir():
                     continue
+                file_listing.append({
+                    'file_path': file_path,
+                    'modified_time': file_path.stat().st_mtime,
+                })
+            file_listing = sorted(file_listing, key=lambda d: d['modified_time'])
+            for file_data in file_listing:
+                file_path = file_data.pop('file_path')
                 self.logger.debug(f'Found music file "{file_path}"')
                 # Check if guild player is still in use
                 # Guild should be last dir before file
@@ -482,11 +491,19 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                     self.logger.debug(f'Player for guild "{guild_id}" no longer exists, removing file')
                     file_path.unlink()
                     continue
+                # Check if only a partially downloaded file
                 if file_path.suffix == '.part':
                     self.logger.warning(f'Ignoring file "{str(file_path)}" since not fully downloaded')
                     continue
                 if (file_path.parent / (file_path.name + '.part')).exists():
                     self.logger.warning(f'Ignoring file "{str(file_path)}" since not fully downloaded')
+                    continue
+                # Check if file is finished or being edited
+                if ('.finished' in file_path.suffixes or '.edited' in file_path.suffixes) and '.mp3' in file_path.suffixes:
+                    self.logger.warning(f'Ignoring file "{str(file_path)}"')
+                    continue
+                if get_finished_path(file_path).exists():
+                    self.logger.warning(f'Finished path for "{file_path}" already exists, skipping')
                     continue
                 # Check if file being used by any player
                 should_skip = False
@@ -499,18 +516,14 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                         break
                 if should_skip:
                     continue
-                # Check if file is finished or being edited
-                if ('.finished' in file_path.suffixes or '.edited' in file_path.suffixes) and '.mp3' in file_path.suffixes:
-                    self.logger.warning(f'Ignoring file "{str(file_path)}"')
-                    continue
                 self.logger.info(f'Editing music file "{str(file_path)}"')
                 # Use a timeout here, has shown to be a bit picky
-                to_run = partial(self.__edit_audio_file, file_path=file_path)
+                to_run = partial(edit_audio_file, file_path=file_path)
                 await loop.run_in_executor(None, to_run)
                 # Sleep so other tasks can run, these runs seem to take a while
                 await asyncio.sleep(.01)
             self.logger.debug('Done editing music files')
-            await asyncio.sleep(180)
+            await asyncio.sleep(60)
 
     async def cleanup(self, guild):
         '''
