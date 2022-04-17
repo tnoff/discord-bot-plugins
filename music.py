@@ -11,7 +11,7 @@ from async_timeout import timeout
 from discord import HTTPException, FFmpegPCMAudio
 from discord.ext import commands
 from moviepy.editor import AudioFileClip, afx
-from sqlalchemy import Column, Integer, String
+from sqlalchemy import Column, DateTime, Integer, String
 from sqlalchemy import ForeignKey, UniqueConstraint
 from sqlalchemy.exc import IntegrityError
 from yt_dlp import YoutubeDL
@@ -49,6 +49,7 @@ class Playlist(BASE):
     id = Column(Integer, primary_key=True)
     name = Column(String(256))
     server_id = Column(String(128))
+    last_queued = Column(DateTime, nullable=True)
 
 
 class PlaylistItem(BASE):
@@ -946,7 +947,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         '''
         return await self.retry_command(self.__playlist_list, ctx)
 
-    async def __playlist_list(self, ctx):
+    async def __playlist_list(self, ctx, max_rows=15):
         if not await self.__check_database_session(ctx):
             return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
         playlist_items = self.db_session.query(Playlist).\
@@ -956,10 +957,26 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not playlist_items:
             return await ctx.send('No playlists in database',
                                   delete_after=self.delete_after)
-        table = ''
-        for (count, playlist) in enumerate(playlist_items):
-            table = f'{table}{count +1:3} || {clean_string(playlist.name):64}\n'
-        return await ctx.send(f'```{table}```', delete_after=self.delete_after)
+        table_strings = []
+        current_index = 0
+        while True:
+            table = ''
+            for (count, item) in enumerate(playlist_items[current_index:]):
+                last_queued = 'N/A'
+                if item.last_queued:
+                    last_queued = item.last_queued.strftime('%Y-%m-%d %H:%M:%S')
+                table = f'{table}\n{count + current_index + 1:3} ||'
+                table = f'{table} {clean_string(item.name, max_length=32):32} ||'
+                table = f'{table} {last_queued:17}'
+                if count >= max_rows - 1:
+                    break
+            table_strings.append(f'```\n{table}\n```')
+            current_index += max_rows
+            if current_index >= len(playlist_items):
+                break
+        await ctx.send(f'```{"ID":3} || {"Playlist Name":32} || {"Last Queued":17}```')
+        for table in table_strings:
+            await ctx.send(f'{table}', delete_after=self.delete_after)
 
     def __playlist_add_item(self, ctx, playlist, data_id, data_title, data_uploader):
         self.logger.info(f'Adding video_id {data_id} to playlist {playlist.id} '
@@ -1137,7 +1154,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return None
         playlist.name = playlist_name
         self.db_session.commit()
-        return await ctx.send(f'Renamed playlist {playlist_index} to name "{playlist_name}"')
+        return await ctx.send(f'Renamed playlist {playlist_index} to name "{playlist_name}"', delete=self.delete_after)
 
     @playlist.command(name='save-queue')
     async def playlist_queue_save(self, ctx, *, name: str):
@@ -1254,6 +1271,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         await ctx.send(f'Added all songs in playlist "{playlist.name}" to queue',
                        delete_after=self.delete_after)
+        playlist.last_queued = datetime.utcnow()
+        self.db_session.commit()
 
         # Reset queue messages
         for queue_message in player.queue_messages:
