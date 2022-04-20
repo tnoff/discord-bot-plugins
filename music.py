@@ -1155,7 +1155,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             if item.uploader is not None:
                 uploader = clean_string(item.uploader)
             items.append({
-                'title': clean_string(item.title),
+                'title': clean_string(item.title, max_length=48),
                 'uploader': uploader,
             })
         if not items:
