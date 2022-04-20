@@ -50,6 +50,7 @@ class Playlist(BASE):
     name = Column(String(256))
     server_id = Column(String(128))
     last_queued = Column(DateTime, nullable=True)
+    created_at = Column(DateTime)
 
 
 class PlaylistItem(BASE):
@@ -892,7 +893,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             await ctx.send(f'Invalid playlist index {playlist_index}', delete_after=self.delete_after)
             return None
         playlist_items = self.db_session.query(Playlist).\
-            filter(Playlist.server_id == str(ctx.guild.id))
+            filter(Playlist.server_id == str(ctx.guild.id)).order_by(Playlist.created_at.asc())
         playlist_items = [p for p in playlist_items]
 
         if not playlist_items:
@@ -915,9 +916,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_create(self, ctx, name):
         if not await self.__check_database_session(ctx):
-            ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
+            ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
             return None
-        playlist = Playlist(name=clean_string(name, max_length=256), server_id=ctx.guild.id)
+        playlist = Playlist(name=clean_string(name, max_length=256),
+                            server_id=ctx.guild.id,
+                            created_at=datetime.utcnow())
         try:
             self.db_session.add(playlist)
             self.db_session.commit()
@@ -949,7 +952,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_list(self, ctx, max_rows=15):
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
+            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
         playlist_items = self.db_session.query(Playlist).\
             filter(Playlist.server_id == str(ctx.guild.id))
         playlist_items = [p for p in playlist_items]
@@ -1011,7 +1014,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_item_add(self, ctx, playlist_index, search):
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
+            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
@@ -1043,7 +1046,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_item_remove(self, ctx, playlist_index, song_index):
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
+            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
@@ -1082,7 +1085,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_show(self, ctx, playlist_index):
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
+            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
@@ -1121,7 +1124,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_delete(self, ctx, playlist_index):
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
+            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
@@ -1148,14 +1151,14 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_rename(self, ctx, playlist_index, playlist_name):
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
+            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
             return None
         playlist.name = playlist_name
         self.db_session.commit()
-        return await ctx.send(f'Renamed playlist {playlist_index} to name "{playlist_name}"', delete=self.delete_after)
+        return await ctx.send(f'Renamed playlist {playlist_index} to name "{playlist_name}"', delete_after=self.delete_after)
 
     @playlist.command(name='save-queue')
     async def playlist_queue_save(self, ctx, *, name: str):
@@ -1213,7 +1216,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_queue(self, ctx, playlist_index, sub_command):
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
+            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
@@ -1302,14 +1305,14 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_merge(self, ctx, playlist_index_one, playlist_index_two):
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete=self.delete_after)
+            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
         playlist_one = await self.__get_playlist(playlist_index_one, ctx)
         playlist_two = await self.__get_playlist(playlist_index_two, ctx)
         if not playlist_one:
-            return ctx.send(f'Cannot find playlist {playlist_index_one}', delete=self.delete_after)
+            return ctx.send(f'Cannot find playlist {playlist_index_one}', delete_after=self.delete_after)
         if not playlist_two:
-            return ctx.send(f'Cannot find playlist {playlist_index_two}', delete=self.delete_after)
+            return ctx.send(f'Cannot find playlist {playlist_index_two}', delete_after=self.delete_after)
         query = self.db_session.query(PlaylistItem).\
             filter(PlaylistItem.playlist_id == playlist_two.id)
         for item in query:
