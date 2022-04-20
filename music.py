@@ -27,7 +27,7 @@ MAX_STRING_LENGTH = 32
 DELETE_AFTER_DEFAULT = 300
 
 # Max queue size
-QUEUE_MAX_SIZE_DEFAULT = 35
+QUEUE_MAX_SIZE_DEFAULT = 128
 
 # Max song length
 MAX_SONG_LENGTH_DEFAULT = 60 * 15
@@ -436,6 +436,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.queue_max_size = settings.get('music_queue_max_size', QUEUE_MAX_SIZE_DEFAULT)
         self.max_song_length = settings.get('music_max_song_length', MAX_SONG_LENGTH_DEFAULT)
         self.download_dir = settings.get('music_download_dir', None)
+        self.enable_audio_processing = settings.get('music_enable_audio_processing', False)
 
         if self.download_dir is not None:
             self.download_dir = Path(self.download_dir)
@@ -471,7 +472,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         while not self.bot.is_closed():
             loop = loop or asyncio.get_event_loop()
             self.logger.debug('Attempting to edit music files')
-            # Sort files by modified time, currently puts newer files at beginning of list
+            # Sort files by modified time, currently puts newest files first
             file_listing = []
             for file_path in self.download_dir.glob('**/*'):
                 if file_path.is_dir():
@@ -480,7 +481,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                     'file_path': file_path,
                     'modified_time': file_path.stat().st_mtime,
                 })
-            file_listing = sorted(file_listing, key=lambda d: d['modified_time'])
+            file_listing = sorted(file_listing, key=lambda d: d['modified_time'], reverse=True)
             for file_data in file_listing:
                 file_path = file_data.pop('file_path')
                 self.logger.debug(f'Found music file "{file_path}"')
@@ -492,6 +493,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 except KeyError:
                     self.logger.debug(f'Player for guild "{guild_id}" no longer exists, removing file')
                     file_path.unlink()
+                    continue
+                # If audio processing not enabled, skip the rest of this
+                if not self.enable_audio_processing:
                     continue
                 # Check if only a partially downloaded file
                 if file_path.suffix == '.part':
@@ -1032,6 +1036,58 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 continue
             await ctx.send('Unable to add playlist item, likely already exists', delete_after=self.delete_after)
 
+    @playlist.command(name='item-search')
+    async def playlist_item_search(self, ctx, playlist_index, *, search: str):
+        '''
+        Find item indexes in playlist that match search
+
+        playlist_index: integer [Required]
+            ID of playlist
+        search: str [Required]
+            String to look for in item title
+        '''
+        return await self.retry_command(self.__playlist_item_search, ctx, playlist_index, search)
+
+    async def __playlist_item_search(self, ctx, playlist_index, search, max_rows=15):
+        if not await self.__check_database_session(ctx):
+            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
+
+        playlist = await self.__get_playlist(playlist_index, ctx)
+        if not playlist:
+            return None
+
+        query = self.db_session.query(PlaylistItem).\
+            filter(PlaylistItem.playlist_id == playlist.id)
+        items = []
+        for (count, item) in enumerate(query):
+            if search.lower() in item.title.lower():
+                items.append({
+                    'count': count + 1,
+                    'title': item.title,
+                })
+        if not items:
+            return await ctx.send(f'No playlist items in matching string "{search}"',
+                                  delete_after=self.delete_after)
+
+        table_strings = []
+        current_index = 0
+        while True:
+            table = ''
+            for (count, item) in enumerate(items[current_index:]):
+                table = f'{table}\n{item["count"]:3} ||'
+                table = f'{table} {clean_string(item["title"], max_length=48):32}'
+                if count >= max_rows - 1:
+                    break
+            table_strings.append(f'```\n{table}\n```')
+            current_index += max_rows
+            if current_index >= len(items):
+                break
+
+        header = f'```{"ID":3} || {"Title":48}```'
+        await ctx.send(header, delete_after=self.delete_after)
+        for table in table_strings:
+            await ctx.send(table, delete_after=self.delete_after)
+
     @playlist.command(name='item-remove')
     async def playlist_item_remove(self, ctx, playlist_index, song_index):
         '''
@@ -1244,8 +1300,13 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                            delete_after=self.delete_after)
             random.shuffle(playlist_items)
 
+        # If queue full, we need to know to break from outer loop
+        quit_entirely = False
+
         for item in playlist_items:
             source_dicts = await self.ytdl.check_source(ctx, f'{item.video_id}', self.bot.loop)
+            if quit_entirely:
+                break
             for source_dict in source_dicts:
                 if source_dict is None:
                     await ctx.send(f'Unable to find youtube source ' \
@@ -1271,6 +1332,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 except asyncio.QueueFull:
                     await ctx.send('Queue is full, cannot add more songs',
                                 delete_after=self.delete_after)
+                    quit_entirely = True
                     break
 
         await ctx.send(f'Added all songs in playlist "{playlist.name}" to queue',
