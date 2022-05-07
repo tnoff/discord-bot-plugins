@@ -932,7 +932,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             self.db_session.rollback()
             await ctx.send(f'Unable to create playlist "{name}", name likely already exists')
             return None
-        self.logger.info(f'Playlist created {playlist.id} in guild {ctx.guild.id}')
+        self.logger.info(f'Playlist created "{playlist.name}" with ID {playlist.id} in guild {ctx.guild.id}')
         await ctx.send(f'Created playlist "{name}"',
                               delete_after=self.delete_after)
         return playlist
@@ -987,7 +987,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             await ctx.send(f'{table}', delete_after=self.delete_after)
 
     def __playlist_add_item(self, ctx, playlist, data_id, data_title, data_uploader):
-        self.logger.info(f'Adding video_id {data_id} to playlist {playlist.id} '
+        self.logger.info(f'Adding video_id {data_id} to playlist "{playlist.name}" '
                          f' in guild {ctx.guild.id}')
         playlist_item = PlaylistItem(title=clean_string(data_title, max_length=256),
                                      video_id=data_id,
@@ -1028,7 +1028,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         for data in source_dicts:
             if data is None:
                 await ctx.send(f'Unable to find video for search {search}')
-            self.logger.info(f'Adding video_id {data["id"]} to playlist {playlist.id} '
+            self.logger.info(f'Adding video_id {data["id"]} to playlist "{playlist.name}" '
                             f' in guild {ctx.guild.id}')
             playlist_item = self.__playlist_add_item(ctx, playlist, data['id'], data['title'], data['uploader'])
             if playlist_item:
@@ -1185,7 +1185,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
             return None
-        self.logger.info(f'Deleting playlist {playlist.id}')
+        self.logger.info(f'Deleting playlist items "{playlist.name}"')
         self.db_session.query(PlaylistItem).\
             filter(PlaylistItem.playlist_id == playlist.id).delete()
         self.db_session.delete(playlist)
@@ -1300,26 +1300,24 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                            delete_after=self.delete_after)
             random.shuffle(playlist_items)
 
-        # If queue full, we need to know to break from outer loop
-        quit_entirely = False
-
         for item in playlist_items:
             source_dicts = await self.ytdl.check_source(ctx, f'{item.video_id}', self.bot.loop)
-            if quit_entirely:
-                break
+            if source_dicts is None:
+                source_dicts = [None]
             for source_dict in source_dicts:
                 if source_dict is None:
                     await ctx.send(f'Unable to find youtube source ' \
                                     f'for "{item.title}", "{item.video_id}"',
                                     delete_after=self.delete_after)
+                    continue
                 # For backwards compat, if uploader not set, add it here
                 if item.uploader is None:
-                    item.uploader = clean_string(source_dict['uploader'], max_length=256)
+                    item.uploader = clean_string(source_dict['uploader'], max_length=256) #pylint:disable=unsubscriptable-object
                     self.db_session.commit()
 
                     continue
-                if source_dict['duration'] > self.max_song_length:
-                    await ctx.send(f'Unable to add <{source_dict["webpage_url"]}>'
+                if source_dict['duration'] > self.max_song_length: #pylint:disable=unsubscriptable-object
+                    await ctx.send(f'Unable to add <{source_dict["webpage_url"]}>' #pylint:disable=unsubscriptable-object
                                     f' to queue, exceeded max length '
                                     f'{self.max_song_length} seconds', delete_after=self.delete_after)
                     continue
@@ -1332,8 +1330,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 except asyncio.QueueFull:
                     await ctx.send('Queue is full, cannot add more songs',
                                 delete_after=self.delete_after)
-                    quit_entirely = True
-                    break
 
         await ctx.send(f'Added all songs in playlist "{playlist.name}" to queue',
                        delete_after=self.delete_after)
@@ -1352,6 +1348,38 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if player.queue_strings is not None:
             for table in player.queue_strings:
                 player.queue_messages.append(await ctx.send(table))
+
+    @playlist.command(name='cleanup')
+    async def playlist_cleanup(self, ctx, playlist_index): #pylint:disable=too-many-branches
+        '''
+        Remove items in playlist where we cannot find source
+
+        playlist_index: integer [Required]
+            ID of playlist
+        '''
+        return await self.retry_command(self.__playlist_cleanup, ctx, playlist_index)
+
+    async def __playlist_cleanup(self, ctx, playlist_index):
+        if not await self.__check_database_session(ctx):
+            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
+
+        playlist = await self.__get_playlist(playlist_index, ctx)
+        if not playlist:
+            return None
+
+        for item in self.db_session.query(PlaylistItem).filter(PlaylistItem.playlist_id == playlist.id):
+            source_dicts = await self.ytdl.check_source(ctx, f'{item.video_id}', self.bot.loop)
+            if source_dicts is None:
+                source_dicts = [None]
+            for source_dict in source_dicts:
+                if source_dict is None:
+                    await ctx.send(f'Unable to find youtube source ' \
+                                    f'for "{item.title}", "{item.video_id}", removing item from database',
+                                    delete_after=self.delete_after)
+                    self.db_session.delete(item)
+                    self.db_session.commit()
+        await ctx.send(f'Checked all songs in playlist "{playlist.name}"',
+                delete_after=self.delete_after)
 
     @playlist.command(name='merge')
     async def playlist_merge(self, ctx, playlist_index_one, playlist_index_two):

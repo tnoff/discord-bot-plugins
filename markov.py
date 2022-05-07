@@ -8,7 +8,7 @@ from typing import Optional
 
 from discord import TextChannel
 from discord.ext import commands
-from discord.errors import NotFound
+from discord.errors import HTTPException, NotFound
 from sqlalchemy import Column, DateTime, Integer, String
 from sqlalchemy import ForeignKey, UniqueConstraint
 from sqlalchemy import func
@@ -155,7 +155,7 @@ class Markov(CogHelper):
         '''
         Our main loop.
         '''
-        await self.retry_command(self.__wait_loop)
+        await self.retry_command(self.__wait_loop, non_db_exceptions=(HTTPException))
 
     async def __wait_loop(self):
         await self.bot.wait_until_ready()
@@ -245,7 +245,7 @@ class Markov(CogHelper):
         '''
         Turn markov on for channel
         '''
-        return await self.retry_command(self.__on, ctx)
+        return await self.retry_command(self.__on, ctx, non_db_exceptions=(HTTPException))
 
     async def __on(self, ctx):
         await self.acquire_lock()
@@ -276,7 +276,7 @@ class Markov(CogHelper):
         '''
         Turn markov off for channel
         '''
-        return await self.retry_command(self.__off, ctx)
+        return await self.retry_command(self.__off, ctx, non_db_exceptions=(HTTPException))
 
     async def __off(self, ctx):
         await self.acquire_lock()
@@ -310,7 +310,7 @@ class Markov(CogHelper):
         Note that for first_word, multiple words can be given, but they must be in quotes
         Ex: !markov speak "hey whats up", or !markov speak "hey whats up" 64
         '''
-        return await self.retry_command(self.__speak, ctx, first_word, sentence_length)
+        return await self.retry_command(self.__speak, ctx, first_word, sentence_length, non_db_exceptions=(HTTPException))
 
     async def __speak(self, ctx, first_word, sentence_length):
         await self.acquire_lock()
