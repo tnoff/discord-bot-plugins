@@ -1212,6 +1212,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
             return None
+        self.logger.info(f'Renaming playlist {playlist.id} to name "{playlist_name}"')
         playlist.name = playlist_name
         self.db_session.commit()
         return await ctx.send(f'Renamed playlist {playlist_index} to name "{playlist_name}"', delete_after=self.delete_after)
@@ -1242,14 +1243,16 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return None
 
         player = self.get_player(ctx)
-        if player.queue.empty():
-            return await ctx.send('There are currently no more queued songs.',
-                                  delete_after=self.delete_after)
 
         queue = player.queue
         if is_history:
             queue = player.history
 
+        self.logger.info(f'Saving queue contents to playlist "{name}", is_history? {is_history}')
+
+        if queue.empty():
+            return await ctx.send('There are no songs to add to playlist',
+                                  delete_after=self.delete_after)
         for data in queue._queue: #pylint:disable=protected-access
             playlist_item = self.__playlist_add_item(ctx, playlist, data['id'], data['title'], data['uploader'])
             if playlist_item:
@@ -1291,6 +1294,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             await ctx.invoke(self.connect_)
         player = self.get_player(ctx)
 
+        self.logger.info(f'Playlist queue called for playlist "{playlist_index}" in server "{ctx.guild.id}"')
         query = self.db_session.query(PlaylistItem).\
             filter(PlaylistItem.playlist_id == playlist.id)
         playlist_items = [item for item in query]
@@ -1314,8 +1318,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 if item.uploader is None:
                     item.uploader = clean_string(source_dict['uploader'], max_length=256) #pylint:disable=unsubscriptable-object
                     self.db_session.commit()
-
-                    continue
                 if source_dict['duration'] > self.max_song_length: #pylint:disable=unsubscriptable-object
                     await ctx.send(f'Unable to add <{source_dict["webpage_url"]}>' #pylint:disable=unsubscriptable-object
                                     f' to queue, exceeded max length '
@@ -1324,6 +1326,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 try:
                     source_download = await self.ytdl.create_source(ctx, source_dict, self.bot.loop)
                     player.queue.put_nowait(source_download)
+                    self.logger.info(f'Adding playlist item "{item.id}" to queue')
                     await ctx.send(f'Added "{source_download["title"]}" to queue. '
                                 f'<{source_download["webpage_url"]}>',
                                 delete_after=self.delete_after)
@@ -1363,6 +1366,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not await self.__check_database_session(ctx):
             return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
+        self.logger.info(f'Playlist cleanup called on index "{playlist_index}" in server "{ctx.guild.id}"')
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
             return None
@@ -1373,11 +1377,13 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 source_dicts = [None]
             for source_dict in source_dicts:
                 if source_dict is None:
+                    self.logger.info(f'Unable to find source for "{item.title}", removing from database')
                     await ctx.send(f'Unable to find youtube source ' \
                                     f'for "{item.title}", "{item.video_id}", removing item from database',
                                     delete_after=self.delete_after)
                     self.db_session.delete(item)
-                    self.db_session.commit()
+            self.db_session.commit()
+        self.logger.info(f'Finished cleanup for all items in playlist "{playlist.id}"')
         await ctx.send(f'Checked all songs in playlist "{playlist.name}"',
                 delete_after=self.delete_after)
 
@@ -1397,6 +1403,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not await self.__check_database_session(ctx):
             return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
+        self.logger.info(f'Calling playlist merge of "{playlist_index_one}" and "{playlist_index_two}" in server "{ctx.guild.id}"')
         playlist_one = await self.__get_playlist(playlist_index_one, ctx)
         playlist_two = await self.__get_playlist(playlist_index_two, ctx)
         if not playlist_one:
