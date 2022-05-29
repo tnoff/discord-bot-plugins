@@ -1259,7 +1259,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 await ctx.send(f'Added item "{data["title"]}" to playlist', delete_after=self.delete_after)
                 continue
             await ctx.send(f'Unable to add playlist item "{data["title"]}", likely already exists', delete_after=self.delete_after)
-        return await ctx.send(f'Finished adding items to playlist "{name}"')
+        await ctx.send(f'Finished adding items to playlist "{name}"')
+        if is_history:
+            player.history.clear()
+            await ctx.send('Cleared history')
+        return
 
     @playlist.command(name='queue')
     async def playlist_queue(self, ctx, playlist_index, sub_command: typing.Optional[str] = ''): #pylint:disable=too-many-branches
