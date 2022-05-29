@@ -1417,5 +1417,5 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             if playlist_item:
                 await ctx.send(f'Added item "{item.title}" to playlist {playlist_index_one}', delete_after=self.delete_after)
                 continue
-            await ctx.send('Unable to add playlist item, likely already exists', delete_after=self.delete_after)
+            await ctx.send(f'Unable to add playlist item "{item.title}", likely already exists', delete_after=self.delete_after)
         await self.__playlist_delete(ctx, playlist_index_two)
