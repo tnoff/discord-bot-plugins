@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 import random
+from re import match as re_match
 import tempfile
 import typing
 
@@ -11,6 +12,8 @@ from async_timeout import timeout
 from discord import HTTPException, FFmpegPCMAudio
 from discord.ext import commands
 from moviepy.editor import AudioFileClip, afx
+from requests import get as requests_get
+from requests import post as requests_post
 from sqlalchemy import Column, DateTime, Integer, String
 from sqlalchemy import ForeignKey, UniqueConstraint
 from sqlalchemy.exc import IntegrityError
@@ -32,6 +35,10 @@ QUEUE_MAX_SIZE_DEFAULT = 128
 # Max song length
 MAX_SONG_LENGTH_DEFAULT = 60 * 15
 
+# Spotify
+SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/api/token'
+SPOTIFY_BASE_URL = 'https://api.spotify.com/v1/'
+SPOTIFY_PLAYLIST_REGEX = r'^https://open.spotify.com/playlist/(?P<playlist_id>(.*))'
 
 #
 # Music Tables
@@ -68,6 +75,70 @@ class PlaylistItem(BASE):
     uploader = Column(String(256))
     playlist_id = Column(Integer, ForeignKey('playlist.id'))
 
+
+#
+# Spotify Client
+#
+
+class SpotifyClient():
+    '''
+    Spotify Client for basic API Use
+    '''
+    def __init__(self, client_id, client_secret):
+        '''
+        Init spotify client
+        '''
+        self._token = None
+        self._expiry = None
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.headers = {
+            'Authorization': f'Bearer {self.token}'
+        }
+
+    @property
+    def token(self):
+        '''
+        Fetch or generate token
+        '''
+        if self._token is None:
+            self._refresh_token()
+        elif self._expiry > datetime.now():
+            self._refresh_token()
+        return self._token
+
+    def _refresh_token(self):
+        '''
+        Refresh token from spotify auth url
+        '''
+        auth_response = requests_post(SPOTIFY_AUTH_URL, {
+            'grant_type': 'client_credentials',
+            'client_id': self.client_id,
+            'client_secret': self.client_secret,
+        })
+        data = auth_response.json()
+        self._token = data['access_token']
+        self._expiry = datetime.now() + timedelta(seconds=data['expires_in'])
+
+    def playlist_get(self, playlist_id):
+        '''
+        Get playlist track info
+        '''
+        r = requests_get(f'{SPOTIFY_BASE_URL}playlists/{playlist_id}', headers=self.headers)
+        if r.status_code != 200:
+            return r.status_code, []
+        playlist_data = r.json()
+        #playlist_name = playlist_data['name']
+        playlist_results = []
+        # TODO playlist list limits at 100
+        # Find a playlist that long and figure out how the pagination works
+        for item in playlist_data['tracks']['items']:
+            playlist_results.append({
+                'track_name': item['track']['name'],
+                'album_name': item['track']['album']['name'],
+                'track_artists': ', '.join(i['name'] for i in item['track']['artists']),
+            })
+        return r.status_code, playlist_results
 
 # Music bot setup
 # Music taken from https://gist.github.com/EvieePy/ab667b74e9758433b3eb806c53a19f34
@@ -214,10 +285,13 @@ class YTDLClient():
     '''
     Youtube DL Source
     '''
-    def __init__(self, ytdl_options, download_dir, logger):
+    def __init__(self, ytdl_options, download_dir, logger, spotify_client_id=None, spotify_client_secret=None):
         self.ytdl_options = ytdl_options
         self.logger = logger
         self.download_dir = download_dir
+        self.spotify_client = None
+        if spotify_client_id and spotify_client_secret:
+            self.spotify_client = SpotifyClient(spotify_client_id, spotify_client_secret)
 
     def __getitem__(self, item: str):
         '''
@@ -249,20 +323,46 @@ class YTDLClient():
         '''
         options = deepcopy(self.ytdl_options)
         ytdl = YoutubeDL(options)
-        # Check song length before we download
+
+        # Check if spotify playlist
+        spotify_matcher = re_match(SPOTIFY_PLAYLIST_REGEX, search)
+        if spotify_matcher and self.spotify_client:
+            status_code, playlist_data = self.spotify_client.playlist_get(spotify_matcher.group('playlist_id'))
+            if status_code != 200:
+                self.logger.error(f'Unable to find spotify playlist {spotify_matcher.group("playlist_id")}')
+                return [None]
+            data_entries = []
+            for item in playlist_data:
+                search_string = f'{item["track_name"]} {item["album_name"]} {item["track_artists"]}'
+                try:
+                    entry = ytdl.extract_info(url=search_string, download=False)
+                except DownloadError:
+                    self.logger.error(f'Error downloading youtube search {search_string}')
+                    data_entries.append(None)
+                try:
+                    data_entries.append(entry['entries'][0])
+                except IndexError:
+                    self.logger.error(f'No entries found for {search_string}')
+                    data_entries.append(None)
+            return data_entries
+
+        # Else assume youtube search
         try:
             data_entries = ytdl.extract_info(url=search, download=False)
         except DownloadError:
             self.logger.error(f'Error downloading youtube search {search}')
             return [None]
+        try:
+            data_entries = data_entries['entries'][0]
+        except (KeyError, IndexError):
+            self.logger.error(f'No entries found for {search}')
+            return [None]
 
         # We dont want to grab a full playlist of results, unless a specific playlist is passed
         # Easiest way to check this is if the search passed in used youtube urls directly
         direct_search = 'https://www.youtube.com' in search or 'https://youtu.be' in search
-        if 'entries' in data_entries:
-            data_entries = data_entries['entries']
-            if not direct_search:
-                data_entries = [data_entries[0]]
+        if not direct_search:
+            data_entries = [data_entries[0]]
 
         if not isinstance(data_entries, list):
             data_entries = [data_entries]
@@ -437,6 +537,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.max_song_length = settings.get('music_max_song_length', MAX_SONG_LENGTH_DEFAULT)
         self.download_dir = settings.get('music_download_dir', None)
         self.enable_audio_processing = settings.get('music_enable_audio_processing', False)
+        self.spotify_client_id = settings.get('music_spotify_client_id', None)
+        self.spotify_client_secret = settings.get('music_spotify_client_secret', None)
 
         if self.download_dir is not None:
             self.download_dir = Path(self.download_dir)
@@ -456,7 +558,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             'default_search': 'auto',
             'source_address': '0.0.0.0'  # ipv6 addresses cause issues sometimes
         }
-        self.ytdl = YTDLClient(ytdlopts, self.download_dir, logger)
+        self.ytdl = YTDLClient(ytdlopts, self.download_dir, logger,
+                               spotify_client_id=self.spotify_client_id, spotify_client_secret=self.spotify_client_secret)
         self.ytdl_options = ytdlopts
         self.bot.loop.create_task(self.modify_files(self.bot.loop))
 
