@@ -6,7 +6,6 @@ import random
 from re import match as re_match
 import tempfile
 import typing
-from uuid import uuid4
 
 from async_timeout import timeout
 from discord import HTTPException, FFmpegPCMAudio
@@ -309,28 +308,37 @@ class DownloadClient():
         '''
         Create source from youtube search
         '''
-        self.logger.info(f'{ctx.author} playing song with search {search}')
-        to_run = partial(self.__check_data_source, search=search)
-        data_entries = await loop.run_in_executor(None, to_run)
-        if data_entries is None:
-            return await ctx.send(f'Unable to find youtube source for "{search}"',
-                                  delete_after=self.delete_after)
+        self.logger.info(f'{ctx.author.name} playing song with search {search}')
+        # If spotify, grab list of search strings, otherwise just grab single search
+        spotify_matcher = re_match(SPOTIFY_PLAYLIST_REGEX, search)
+        if spotify_matcher and self.spotify_client:
+            to_run = partial(self.__check_spotify_source, playlist_id=spotify_matcher.group('playlist_id'))
+            search_strings = await loop.run_in_executor(None, to_run)
+        else:
+            search_strings = [search]
+
         all_entries = []
-        for entry in data_entries:
-            if max_song_length and entry['duration'] > max_song_length:
-                return await ctx.send(f'Unable to add "<{entry["webpage_url"]}>" to queue, exceeded max length '
-                                      f'{max_song_length} seconds')
-            entry['guild_id'] = ctx.guild.id
-            entry['requester'] = f'{ctx.author}'
-            entry['channel'] = ctx.channel
-            if not download_queue:
-                all_entries.append(entry)
-            else:
-                try:
-                    download_queue.put_nowait(entry)
-                except asyncio.QueueFull:
-                    await ctx.send('Queue is full, cannot add more songs',
+        for search_string in search_strings:
+            to_run = partial(self.__run_search, search_string=search_string)
+            data_entries = await loop.run_in_executor(None, to_run)
+            if data_entries is None:
+                return await ctx.send(f'Unable to find youtube source for "{search_string}"',
                                     delete_after=self.delete_after)
+            for entry in data_entries:
+                if max_song_length and entry['duration'] > max_song_length:
+                    return await ctx.send(f'Unable to add "<{entry["webpage_url"]}>" to queue, exceeded max length '
+                                        f'{max_song_length} seconds')
+                entry['guild_id'] = ctx.guild.id
+                entry['requester'] = f'{ctx.author.name}'
+                entry['channel'] = ctx.channel
+                if not download_queue:
+                    all_entries.append(entry)
+                else:
+                    try:
+                        download_queue.put_nowait(entry)
+                    except asyncio.QueueFull:
+                        await ctx.send('Queue is full, cannot add more songs',
+                                        delete_after=self.delete_after)
         return all_entries
 
     def __run_search(self, search_string):
@@ -339,32 +347,29 @@ class DownloadClient():
         except DownloadError:
             self.logger.error(f'Error downloading youtube search {search_string}')
             return None
-        if not entry_data['entries']:
+        try:
+            entries = entry_data['entries']
+        except KeyError:
+            # Sometimes direct search returns a single item
+            if 'id' in entry_data:
+                return [entry_data]
+            return None
+        if not entries:
             self.logger.error(f'No entries found for {search_string}')
             return None
-        return entry_data['entries']
+        return entries
 
     def __check_spotify_source(self, playlist_id):
+        self.logger.debug(f'Checking for spotify playlist {playlist_id}')
         status_code, playlist_data = self.spotify_client.playlist_get(playlist_id)
         if status_code != 200:
             self.logger.error(f'Unable to find spotify playlist {playlist_id}')
             return []
-        data_entries = []
+        search_strings = []
         for item in playlist_data:
             search_string = f'{item["track_name"]} {item["album_name"]} {item["track_artists"]}'
-            data_entries.append(self.__run_search(search_string))
-        return data_entries
-
-    def __check_data_source(self, search):
-        '''
-        Check search results do not go past max song length
-        '''
-        # Check if spotify playlist
-        spotify_matcher = re_match(SPOTIFY_PLAYLIST_REGEX, search)
-        if spotify_matcher and self.spotify_client:
-            return self.__check_spotify_source(spotify_matcher.group('playlist_id'))
-
-        return self.__run_search(search)
+            search_strings.append(search_string)
+        return search_strings
 
     def __prepare_data_source(self, source_dict):
         '''
@@ -382,8 +387,9 @@ class DownloadClient():
         file_path.touch(exist_ok=True)
         self.logger.info(f'Downloaded url "{data["webpage_url"]} to file "{file_path}"')
         data['requester'] = source_dict['requester']
+        data['guild_id'] = source_dict['guild_id']
         # Make file path a generic uuid4, in case we have duplicates
-        file_path.rename(file_path.parent / f'{uuid4()}{".".join(i for i in file_path.suffixes)}')
+        #file_path.rename(file_path.parent / f'{uuid4()}{".".join(i for i in file_path.suffixes)}')
         data['file_path'] = file_path
         edited_path = edit_audio_file(file_path)
         if edited_path:
@@ -402,13 +408,14 @@ class MusicPlayer:
     When the bot disconnects from the Voice it's instance will be destroyed.
     '''
 
-    def __init__(self, ctx, logger, ytdl_options, max_song_length, queue_max_size):
+    def __init__(self, ctx, logger, ytdl, max_song_length, queue_max_size, delete_after):
         self.bot = ctx.bot
         self.logger = logger
         self._guild = ctx.guild
         self._channel = ctx.channel
         self._cog = ctx.cog
-        self.ytdl_options = ytdl_options
+        self.ytdl = ytdl
+        self.delete_after = delete_after
 
         self.logger.info(f'Max length for music queue in guild {self._guild} is {queue_max_size}')
         self.download_queue = MyQueue(maxsize=queue_max_size)
@@ -425,6 +432,41 @@ class MusicPlayer:
         self.current_path = None
 
         ctx.bot.loop.create_task(self.player_loop())
+        ctx.bot.loop.create_task(self.download_files())
+
+    async def download_files(self):
+        '''
+        Go through download loop and download all files
+        '''
+        await self.bot.wait_until_ready()
+
+        while not self.bot.is_closed():
+            source_dict = await self.download_queue.get()
+            try:
+                source_download = await self.ytdl.create_source(source_dict, self.bot.loop)
+                self.play_queue.put_nowait(source_download)
+                self.logger.info(f'Adding "{source_download["title"]}" '
+                                    f'to queue in guild {source_dict["guild_id"]}')
+                await source_dict['channel'].send(f'Added "{source_download["title"]}" to queue. '
+                                                f'"<{source_download["webpage_url"]}>"',
+                                                delete_after=self.delete_after)
+            except asyncio.QueueFull:
+                await source_dict['channel'].send('Queue is full, cannot add more songs',
+                                                    delete_after=self.delete_after)
+                continue
+            # Reset queue messages
+            for queue_message in self.queue_messages:
+                try:
+                    await queue_message.delete()
+                except HTTPException:
+                    pass
+
+            self.queue_strings = get_queue_message(self.play_queue)
+            self.queue_messages = []
+            if self.queue_strings is not None:
+                for table in self.queue_strings:
+                    self.queue_messages.append(await source_dict['channel'].send(table))
+            await asyncio.sleep(.01)
 
     async def player_loop(self):
         '''
@@ -466,7 +508,7 @@ class MusicPlayer:
             self.logger.info(f'Music bot now playing "{source_dict["title"]}" requested '
                              f'by "{source_dict["requester"]}" in guild "{self._guild}", url '
                              f'"{source_dict["webpage_url"]}"')
-            message = f'Now playing {source_dict["webpage_url"]} requested by {source_dict["requester"].name}'
+            message = f'Now playing {source_dict["webpage_url"]} requested by {source_dict["requester"]}'
             self.np_string = message
             self.np = await self._channel.send(message)
 
@@ -557,53 +599,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             'logger': logger,
             'default_search': 'auto',
             'source_address': '0.0.0.0',  # ipv6 addresses cause issues sometimes
+            # TODO add back mechanism so we dont override per guild
             'outtmpl': str(self.download_dir / '%(extractor)s-%(id)s-%(title)s.%(ext)s'),
         }
         self.ytdl = DownloadClient(ytdlopts, logger,
                                    spotify_client=self.spotify_client, delete_after=self.delete_after)
-        self.ytdl_options = ytdlopts
-        self.bot.loop.create_task(self.download_files(self.bot.loop))
-
-    async def download_files(self, loop):
-        '''
-        Go through download loop and download all files
-        '''
-        await self.bot.wait_until_ready()
-
-        while not self.bot.is_closed():
-            # Check each active player for anything in the download queue
-            for guild_id, player in self.players.items():
-                try:
-                    async with timeout(1):
-                        source_dict = await player.download_queue.get()
-                except asyncio.TimeoutError:
-                    self.logger.error(f'Music bot reached timeout on queue in guild "{guild_id}"')
-                    continue
-                try:
-                    source_download = await self.ytdl.create_source(source_dict, loop)
-                    player.play_queue.put_nowait(source_download)
-                    self.logger.info(f'Adding "{source_download["title"]}" '
-                                     f'to queue in guild {guild_id}')
-                    await source_dict['channel'].send(f'Added "{source_download["title"]}" to queue. '
-                                                    f'"<{source_download["webpage_url"]}>"',
-                                                    delete_after=self.delete_after)
-                except asyncio.QueueFull:
-                    await source_dict['channel'].send('Queue is full, cannot add more songs',
-                                                      delete_after=self.delete_after)
-                    continue
-                # Reset queue messages
-                for queue_message in player.queue_messages:
-                    try:
-                        await queue_message.delete()
-                    except HTTPException:
-                        pass
-
-                player.queue_strings = get_queue_message(player.queue)
-                player.queue_messages = []
-                if player.queue_strings is not None:
-                    for table in player.queue_strings:
-                        player.queue_messages.append(await source_dict['channel'].send(table))
-            await asyncio.sleep(.01)
 
     async def cleanup(self, guild):
         '''
@@ -636,7 +636,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         try:
             player = self.players[ctx.guild.id]
         except KeyError:
-            player = MusicPlayer(ctx, self.logger, self.ytdl_options, self.max_song_length, queue_max_size=self.queue_max_size)
+            player = MusicPlayer(ctx, self.logger, self.ytdl, self.max_song_length, self.queue_max_size, self.delete_after)
             self.players[ctx.guild.id] = player
 
         return player
@@ -764,7 +764,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             await queue_message.delete()
         player.queue_messages = []
 
-        player.queue_strings = get_queue_message(player.queue)
+        player.queue_strings = get_queue_message(player.play_queue)
         if player.queue_strings is not None:
             for table in player.queue_strings:
                 await ctx.send(f'{table}', delete_after=self.delete_after)
@@ -822,7 +822,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         for queue_message in player.queue_messages:
             await queue_message.delete()
 
-        player.queue_strings = get_queue_message(player.queue)
+        player.queue_strings = get_queue_message(player.play_queue)
         player.queue_messages = []
         if player.queue_strings is not None:
             for table in player.queue_strings:
@@ -867,7 +867,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             except HTTPException:
                 pass
 
-        player.queue_strings = get_queue_message(player.queue)
+        player.queue_strings = get_queue_message(player.play_queue)
         player.queue_messages = []
         if player.queue_strings is not None:
             for table in player.queue_strings:
@@ -912,7 +912,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             except HTTPException:
                 pass
 
-        player.queue_strings = get_queue_message(player.queue)
+        player.queue_strings = get_queue_message(player.play_queue)
         player.queue_messages = []
         if player.queue_strings is not None:
             for table in player.queue_strings:
@@ -1352,6 +1352,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         for item in playlist_items:
             await self.ytdl.check_source(ctx, f'{item.video_id}', self.bot.loop,
                                          max_song_length=self.max_song_length, download_queue=player.download_queue)
+            await asyncio.sleep(.01)
 
         await ctx.send(f'Added all songs in playlist "{playlist.name}" to queue',
                        delete_after=self.delete_after)
@@ -1386,6 +1387,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                 delete_after=self.delete_after)
                 self.db_session.delete(item)
                 self.db_session.commit()
+            await asyncio.sleep(.01)
         self.logger.info(f'Finished cleanup for all items in playlist "{playlist.id}"')
         await ctx.send(f'Checked all songs in playlist "{playlist.name}"',
                 delete_after=self.delete_after)
