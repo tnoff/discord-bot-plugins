@@ -103,7 +103,7 @@ class SpotifyClient():
         '''
         if self._token is None:
             self._refresh_token()
-        elif self._expiry > datetime.now():
+        elif self._expiry < datetime.now():
             self._refresh_token()
         return self._token
 
@@ -128,7 +128,6 @@ class SpotifyClient():
         if r.status_code != 200:
             return r.status_code, []
         playlist_data = r.json()
-        #playlist_name = playlist_data['name']
         playlist_results = []
         # TODO playlist list limits at 100
         # Find a playlist that long and figure out how the pagination works
@@ -285,13 +284,11 @@ class YTDLClient():
     '''
     Youtube DL Source
     '''
-    def __init__(self, ytdl_options, download_dir, logger, spotify_client_id=None, spotify_client_secret=None):
+    def __init__(self, ytdl_options, download_dir, logger, spotify_client=None):
         self.ytdl_options = ytdl_options
         self.logger = logger
         self.download_dir = download_dir
-        self.spotify_client = None
-        if spotify_client_id and spotify_client_secret:
-            self.spotify_client = SpotifyClient(spotify_client_id, spotify_client_secret)
+        self.spotify_client = spotify_client
 
     def __getitem__(self, item: str):
         '''
@@ -537,8 +534,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.max_song_length = settings.get('music_max_song_length', MAX_SONG_LENGTH_DEFAULT)
         self.download_dir = settings.get('music_download_dir', None)
         self.enable_audio_processing = settings.get('music_enable_audio_processing', False)
-        self.spotify_client_id = settings.get('music_spotify_client_id', None)
-        self.spotify_client_secret = settings.get('music_spotify_client_secret', None)
+        spotify_client_id = settings.get('music_spotify_client_id', None)
+        spotify_client_secret = settings.get('music_spotify_client_secret', None)
+        if spotify_client_id and spotify_client_secret:
+            self.spotify_client = SpotifyClient(spotify_client_id, spotify_client_secret)
 
         if self.download_dir is not None:
             self.download_dir = Path(self.download_dir)
@@ -559,7 +558,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             'source_address': '0.0.0.0'  # ipv6 addresses cause issues sometimes
         }
         self.ytdl = YTDLClient(ytdlopts, self.download_dir, logger,
-                               spotify_client_id=self.spotify_client_id, spotify_client_secret=self.spotify_client_secret)
+                               spotify_client=self.spotify_client)
         self.ytdl_options = ytdlopts
         self.bot.loop.create_task(self.modify_files(self.bot.loop))
 
