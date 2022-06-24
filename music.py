@@ -283,8 +283,8 @@ class DownloadClient():
     '''
     Download Client using yt-dlp
     '''
-    def __init__(self, ytdl_options, logger, spotify_client=None, delete_after=None):
-        self.ytdl = YoutubeDL(ytdl_options)
+    def __init__(self, ytdl, logger, spotify_client=None, delete_after=None):
+        self.ytdl = ytdl
         self.logger = logger
         self.spotify_client = spotify_client
         self.delete_after = delete_after
@@ -446,7 +446,7 @@ class MusicPlayer:
                 source_download = await self.ytdl.create_source(source_dict, self.bot.loop)
                 self.play_queue.put_nowait(source_download)
                 self.logger.info(f'Adding "{source_download["title"]}" '
-                                    f'to queue in guild {source_dict["guild_id"]}')
+                                 f'to queue in guild {source_dict["guild_id"]}')
                 await source_dict['channel'].send(f'Added "{source_download["title"]}" to queue. '
                                                 f'"<{source_download["webpage_url"]}>"',
                                                 delete_after=self.delete_after)
@@ -571,6 +571,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         super().__init__(bot, db_engine, logger, settings)
         BASE.metadata.create_all(self.db_engine)
         BASE.metadata.bind = self.db_engine
+        self.logger = logger
         self.players = {}
         self.delete_after = settings.get('music_message_delete_after', DELETE_AFTER_DEFAULT)
         self.queue_max_size = settings.get('music_queue_max_size', QUEUE_MAX_SIZE_DEFAULT)
@@ -588,22 +589,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 self.download_dir.mkdir(exist_ok=True, parents=True)
         else:
             self.download_dir = Path(tempfile.TemporaryDirectory().name) #pylint:disable=consider-using-with
-
-        ytdlopts = {
-            'format': 'bestaudio',
-            'restrictfilenames': True,
-            'noplaylist': True,
-            'nocheckcertificate': True,
-            'ignoreerrors': False,
-            'logtostderr': False,
-            'logger': logger,
-            'default_search': 'auto',
-            'source_address': '0.0.0.0',  # ipv6 addresses cause issues sometimes
-            # TODO add back mechanism so we dont override per guild
-            'outtmpl': str(self.download_dir / '%(extractor)s-%(id)s-%(title)s.%(ext)s'),
-        }
-        self.ytdl = DownloadClient(ytdlopts, logger,
-                                   spotify_client=self.spotify_client, delete_after=self.delete_after)
 
     async def cleanup(self, guild):
         '''
@@ -636,7 +621,23 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         try:
             player = self.players[ctx.guild.id]
         except KeyError:
-            player = MusicPlayer(ctx, self.logger, self.ytdl, self.max_song_length, self.queue_max_size, self.delete_after)
+            guild_path = self.download_dir / ctx.guild.id
+            guild_path.mkdir(exist_ok=True, parents=True)
+            ytdlopts = {
+                'format': 'bestaudio',
+                'restrictfilenames': True,
+                'noplaylist': True,
+                'nocheckcertificate': True,
+                'ignoreerrors': False,
+                'logtostderr': False,
+                'logger': self.logger,
+                'default_search': 'auto',
+                'source_address': '0.0.0.0',  # ipv6 addresses cause issues sometimes
+                'outtmpl': str(guild_path / '%(extractor)s-%(id)s-%(title)s.%(ext)s'),
+            }
+            ytdl = DownloadClient(YoutubeDL(ytdlopts), self.logger,
+                                  spotify_client=self.spotify_client, delete_after=self.delete_after)
+            player = MusicPlayer(ctx, self.logger, ytdl, self.max_song_length, self.queue_max_size, self.delete_after)
             self.players[ctx.guild.id] = player
 
         return player
@@ -700,8 +701,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await ctx.send('Queue is full, cannot add more songs',
                                   delete_after=self.delete_after)
 
-        await self.ytdl.check_source(ctx, search, self.bot.loop,
-                                     max_song_length=self.max_song_length, download_queue=player.download_queue)
+        await player.ytdl.check_source(ctx, search, self.bot.loop,
+                                       max_song_length=self.max_song_length, download_queue=player.download_queue)
 
     @commands.command(name='skip')
     async def skip_(self, ctx):
@@ -1061,11 +1062,18 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not await self.__check_database_session(ctx):
             return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
+        vc = ctx.voice_client
+
+        if not vc:
+            await ctx.invoke(self.connect_)
+
+        player = self.get_player(ctx)
+
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
             return None
 
-        source_dicts = await self.ytdl.check_source(ctx, search, self.bot.loop)
+        source_dicts = await player.ytdl.check_source(ctx, search, self.bot.loop)
         if source_dicts is None:
             return await ctx.send(f'Unable to find video for search {search}')
         for data in source_dicts:
@@ -1350,7 +1358,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             random.shuffle(playlist_items)
 
         for item in playlist_items:
-            await self.ytdl.check_source(ctx, f'{item.video_id}', self.bot.loop,
+            await player.ytdl.check_source(ctx, f'{item.video_id}', self.bot.loop,
                                          max_song_length=self.max_song_length, download_queue=player.download_queue)
             await asyncio.sleep(.01)
 
@@ -1373,13 +1381,20 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not await self.__check_database_session(ctx):
             return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
+        vc = ctx.voice_client
+
+        if not vc:
+            await ctx.invoke(self.connect_)
+
+        player = self.get_player(ctx)
+
         self.logger.info(f'Playlist cleanup called on index "{playlist_index}" in server "{ctx.guild.id}"')
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
             return None
 
         for item in self.db_session.query(PlaylistItem).filter(PlaylistItem.playlist_id == playlist.id):
-            source_dicts = await self.ytdl.check_source(ctx, f'{item.video_id}', self.bot.loop)
+            source_dicts = await player.ytdl.check_source(ctx, f'{item.video_id}', self.bot.loop)
             if source_dicts is None:
                 self.logger.info(f'Unable to find source for "{item.title}", removing from database')
                 await ctx.send(f'Unable to find youtube source ' \
