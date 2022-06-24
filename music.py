@@ -6,6 +6,7 @@ import random
 from re import match as re_match
 import tempfile
 import typing
+from uuid import uuid4
 
 from async_timeout import timeout
 from discord import HTTPException, FFmpegPCMAudio
@@ -283,11 +284,12 @@ class DownloadClient():
     '''
     Download Client using yt-dlp
     '''
-    def __init__(self, ytdl, logger, spotify_client=None, delete_after=None):
+    def __init__(self, ytdl, logger, spotify_client=None, delete_after=None, enable_audio_processing=False):
         self.ytdl = ytdl
         self.logger = logger
         self.spotify_client = spotify_client
         self.delete_after = delete_after
+        self.enable_audio_processing = enable_audio_processing
 
     def __getitem__(self, item: str):
         '''
@@ -385,16 +387,18 @@ class DownloadClient():
         # The modified time of download videos can be the time when it was actually uploaded to youtube
         # Touch here to update the modified time, so that the cleanup check works as intendend
         file_path.touch(exist_ok=True)
-        self.logger.info(f'Downloaded url "{data["webpage_url"]} to file "{file_path}"')
+        # Rename file to a random uuid name, that way we can have diff videos with same/similar names
+        uuid_path = file_path.parent / f'{uuid4()}{".".join(i for i in file_path.suffixes)}'
+        file_path.rename(uuid_path)
+        self.logger.info(f'Downloaded url "{data["webpage_url"]} to file "{uuid_path}"')
         data['requester'] = source_dict['requester']
         data['guild_id'] = source_dict['guild_id']
-        # Make file path a generic uuid4, in case we have duplicates
-        #file_path.rename(file_path.parent / f'{uuid4()}{".".join(i for i in file_path.suffixes)}')
-        data['file_path'] = file_path
-        edited_path = edit_audio_file(file_path)
-        if edited_path:
-            data['file_path'] = edited_path
-            file_path.unlink()
+        data['file_path'] = uuid_path
+        if self.enable_audio_processing:
+            edited_path = edit_audio_file(uuid_path)
+            if edited_path:
+                data['file_path'] = edited_path
+                uuid_path.unlink()
         return data
 
 
@@ -636,8 +640,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 'outtmpl': str(guild_path / '%(extractor)s-%(id)s-%(title)s.%(ext)s'),
             }
             ytdl = DownloadClient(YoutubeDL(ytdlopts), self.logger,
-                                  spotify_client=self.spotify_client, delete_after=self.delete_after)
-            player = MusicPlayer(ctx, self.logger, ytdl, self.max_song_length, self.queue_max_size, self.delete_after)
+                                  spotify_client=self.spotify_client, delete_after=self.delete_after,
+                                  enable_audio_processing=self.enable_audio_processing)
+            player = MusicPlayer(ctx, self.logger, ytdl, self.max_song_length,
+                                 self.queue_max_size, self.delete_after)
             self.players[ctx.guild.id] = player
 
         return player
