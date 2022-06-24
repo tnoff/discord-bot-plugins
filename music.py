@@ -380,7 +380,7 @@ class DownloadClient():
             return []
         search_strings = []
         for item in playlist_data:
-            search_string = f'{item["track_name"]} {item["album_name"]} {item["track_artists"]}'
+            search_string = f'{item["track_name"]} {item["track_artists"]}'
             search_strings.append(search_string)
         return search_strings
 
