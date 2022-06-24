@@ -1309,7 +1309,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         player = self.get_player(ctx)
 
-        queue = player.queue
+        queue = player.play_queue
         if is_history:
             queue = player.history
 
