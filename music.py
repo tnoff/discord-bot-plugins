@@ -124,19 +124,28 @@ class SpotifyClient():
         '''
         Get playlist track info
         '''
-        r = requests_get(f'{SPOTIFY_BASE_URL}playlists/{playlist_id}', headers=self.headers)
-        if r.status_code != 200:
-            return r.status_code, []
-        playlist_data = r.json()
+        url = f'{SPOTIFY_BASE_URL}playlists/{playlist_id}'
         playlist_results = []
-        # TODO playlist list limits at 100
-        # Find a playlist that long and figure out how the pagination works
-        for item in playlist_data['tracks']['items']:
-            playlist_results.append({
-                'track_name': item['track']['name'],
-                'album_name': item['track']['album']['name'],
-                'track_artists': ', '.join(i['name'] for i in item['track']['artists']),
-            })
+        while True:
+            r = requests_get(url, headers=self.headers)
+            if r.status_code != 200:
+                return r.status_code, playlist_results
+            playlist_data = r.json()
+            # May or may not have 'tracks' key
+            try:
+                playlist_data = playlist_data['tracks']
+            except KeyError:
+                pass
+            for item in playlist_data['items']:
+                playlist_results.append({
+                    'track_name': item['track']['name'],
+                    'album_name': item['track']['album']['name'],
+                    'track_artists': ', '.join(i['name'] for i in item['track']['artists']),
+                })
+            try:
+                url = playlist_data['tracks']['next']
+            except KeyError:
+                return r.status_code, playlist_results
         return r.status_code, playlist_results
 
 # Music bot setup
@@ -310,15 +319,14 @@ class DownloadClient():
         '''
         Create source from youtube search
         '''
-        self.logger.info(f'{ctx.author.name} playing song with search {search}')
         # If spotify, grab list of search strings, otherwise just grab single search
         spotify_matcher = re_match(SPOTIFY_PLAYLIST_REGEX, search)
         if spotify_matcher and self.spotify_client:
             to_run = partial(self.__check_spotify_source, playlist_id=spotify_matcher.group('playlist_id'))
             search_strings = await loop.run_in_executor(None, to_run)
+            self.logger.debug(f'Gathered {len(search_strings)} from spotify playlist "{search}"')
         else:
             search_strings = [search]
-
         all_entries = []
         for search_string in search_strings:
             to_run = partial(self.__run_search, search_string=search_string)
@@ -328,8 +336,9 @@ class DownloadClient():
                                     delete_after=self.delete_after)
             for entry in data_entries:
                 if max_song_length and entry['duration'] > max_song_length:
-                    return await ctx.send(f'Unable to add "<{entry["webpage_url"]}>" to queue, exceeded max length '
-                                        f'{max_song_length} seconds')
+                    await ctx.send(f'Unable to add "<{entry["webpage_url"]}>" to queue, exceeded max length '
+                                   f'{max_song_length} seconds')
+                    continue
                 entry['guild_id'] = ctx.guild.id
                 entry['requester'] = f'{ctx.author.name}'
                 entry['channel'] = ctx.channel
@@ -339,8 +348,10 @@ class DownloadClient():
                     try:
                         download_queue.put_nowait(entry)
                     except asyncio.QueueFull:
+                        # Return here since we probably cant find any more entries
                         await ctx.send('Queue is full, cannot add more songs',
-                                        delete_after=self.delete_after)
+                                       delete_after=self.delete_after)
+                        return all_entries
         return all_entries
 
     def __run_search(self, search_string):
@@ -470,7 +481,6 @@ class MusicPlayer:
             if self.queue_strings is not None:
                 for table in self.queue_strings:
                     self.queue_messages.append(await source_dict['channel'].send(table))
-            await asyncio.sleep(.01)
 
     async def player_loop(self):
         '''
@@ -625,7 +635,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         try:
             player = self.players[ctx.guild.id]
         except KeyError:
-            guild_path = self.download_dir / ctx.guild.id
+            guild_path = self.download_dir / f'{ctx.guild.id}'
             guild_path.mkdir(exist_ok=True, parents=True)
             ytdlopts = {
                 'format': 'bestaudio',
@@ -1366,8 +1376,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         for item in playlist_items:
             await player.ytdl.check_source(ctx, f'{item.video_id}', self.bot.loop,
                                          max_song_length=self.max_song_length, download_queue=player.download_queue)
-            await asyncio.sleep(.01)
-
         await ctx.send(f'Added all songs in playlist "{playlist.name}" to queue',
                        delete_after=self.delete_after)
         playlist.last_queued = datetime.utcnow()
@@ -1408,7 +1416,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                 delete_after=self.delete_after)
                 self.db_session.delete(item)
                 self.db_session.commit()
-            await asyncio.sleep(.01)
         self.logger.info(f'Finished cleanup for all items in playlist "{playlist.id}"')
         await ctx.send(f'Checked all songs in playlist "{playlist.name}"',
                 delete_after=self.delete_after)
