@@ -4,12 +4,12 @@ from functools import partial
 from pathlib import Path
 import random
 from re import match as re_match
-import tempfile
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 import typing
 from uuid import uuid4
 
 from async_timeout import timeout
-from discord import HTTPException, FFmpegPCMAudio
+from discord import FFmpegPCMAudio
 from discord.ext import commands
 from moviepy.editor import AudioFileClip, afx
 from requests import get as requests_get
@@ -341,17 +341,20 @@ class DownloadClient():
                     continue
                 entry['guild_id'] = ctx.guild.id
                 entry['requester'] = f'{ctx.author.name}'
-                entry['channel'] = ctx.channel
                 if not download_queue:
                     all_entries.append(entry)
                 else:
                     try:
+                        self.logger.debug(f'Handing off song song "{entry["title"]}" with url "{entry["webpage_url"]}" to download queue')
                         download_queue.put_nowait(entry)
                     except asyncio.QueueFull:
                         # Return here since we probably cant find any more entries
+                        self.logger.warning(f'Queue too full, skipping song "{entry["title"]}"')
                         await ctx.send('Queue is full, cannot add more songs',
                                        delete_after=self.delete_after)
                         return all_entries
+            # Wait 10 seconds so we dont blast youtube apis
+            await asyncio.sleep(10)
         return all_entries
 
     def __run_search(self, search_string):
@@ -440,14 +443,61 @@ class MusicPlayer:
 
         self.np = None  # Now playing message
         self.queue_messages = [] # Show current queue
-        self.np_string = None # Keep np message here in case we pause
-        self.queue_strings = None # Keep string here in case we pause
         self.volume = 1
         self.max_song_length = max_song_length
         self.current_path = None
 
+        # For showing messages
+        self.lock_file = Path(NamedTemporaryFile(delete=False).name) #pylint:disable=consider-using-with
+
         ctx.bot.loop.create_task(self.player_loop())
         ctx.bot.loop.create_task(self.download_files())
+
+    async def acquire_lock(self, wait_timeout=600):
+        '''
+        Wait for and acquire lock
+        '''
+        start = datetime.now()
+        while True:
+            if (datetime.now() - start).seconds > wait_timeout:
+                raise Exception('Error acquiring markov lock')
+            if self.lock_file.read_text() == 'locked':
+                await asyncio.sleep(.5)
+                continue
+            break
+        self.lock_file.write_text('locked')
+
+    async def release_lock(self):
+        '''
+        Release lock
+        '''
+        self.lock_file.write_text('unlocked')
+
+    async def check_latest_message(self, last_message_id):
+        '''
+        Check if latest message in history is no longer queue message sent
+        '''
+        history = await self._channel.history(limit=1).flatten()
+        return history[0].id == last_message_id
+
+    async def update_queue_strings(self, delete_messages=False):
+        '''
+        Update queue message in channel
+        '''
+        await self.acquire_lock()
+        self.logger.debug(f'Updating queue messages in channel {self._channel.id}')
+        new_queue_strings = get_queue_message(self.play_queue) or []
+        if delete_messages or len(self.queue_messages) != len(new_queue_strings):
+            for queue_message in self.queue_messages:
+                await queue_message.delete()
+            self.queue_messages = []
+            for table in new_queue_strings:
+                self.queue_messages.append(await self._channel.send(table))
+        else:
+            # Can skip first message as its likely just column names
+            for (count, queue_message) in enumerate(self.queue_messages):
+                await queue_message.edit(content=new_queue_strings[count])
+        await self.release_lock()
 
     async def download_files(self):
         '''
@@ -462,25 +512,13 @@ class MusicPlayer:
                 self.play_queue.put_nowait(source_download)
                 self.logger.info(f'Adding "{source_download["title"]}" '
                                  f'to queue in guild {source_dict["guild_id"]}')
-                await source_dict['channel'].send(f'Added "{source_download["title"]}" to queue. '
-                                                f'"<{source_download["webpage_url"]}>"',
-                                                delete_after=self.delete_after)
             except asyncio.QueueFull:
-                await source_dict['channel'].send('Queue is full, cannot add more songs',
-                                                    delete_after=self.delete_after)
+                await self._channel.send('Queue is full, cannot add more songs',
+                                         delete_after=self.delete_after)
                 continue
-            # Reset queue messages
-            for queue_message in self.queue_messages:
-                try:
-                    await queue_message.delete()
-                except HTTPException:
-                    pass
-
-            self.queue_strings = get_queue_message(self.play_queue)
-            self.queue_messages = []
-            if self.queue_strings is not None:
-                for table in self.queue_strings:
-                    self.queue_messages.append(await source_dict['channel'].send(table))
+            await self.update_queue_strings()
+            # Wait 10 seconds so we dont blast youtube api
+            await asyncio.sleep(10)
 
     async def player_loop(self):
         '''
@@ -523,14 +561,19 @@ class MusicPlayer:
                              f'by "{source_dict["requester"]}" in guild "{self._guild}", url '
                              f'"{source_dict["webpage_url"]}"')
             message = f'Now playing {source_dict["webpage_url"]} requested by {source_dict["requester"]}'
-            self.np_string = message
-            self.np = await self._channel.send(message)
+            last_message_check = False
+            if self.queue_messages:
+                last_message_check = await self.check_latest_message(self.queue_messages[-1])
+            if self.np is None:
+                self.np = await self._channel.send(message)
+            elif not last_message_check:
+                await self.np.delete()
+                self.np = await self._channel.send(message)
+            else:
+                await self.np.edit(content=message)
 
-            self.queue_messages = []
-            self.queue_strings = get_queue_message(self.play_queue)
-            if self.queue_strings is not None:
-                for table in self.queue_strings:
-                    self.queue_messages.append(await self._channel.send(table))
+            await asyncio.sleep(1)
+            await self.update_queue_strings(delete_messages=not last_message_check)
 
             await self.next.wait()
 
@@ -544,14 +587,6 @@ class MusicPlayer:
             except asyncio.QueueFull:
                 await self.history.get()
                 self.history.put_nowait(source_dict)
-
-            try:
-                # We are no longer playing this song...
-                await self.np.delete()
-                for queue_message in self.queue_messages:
-                    await queue_message.delete()
-            except HTTPException:
-                pass
 
     async def clear_remaining_queue(self):
         '''
@@ -602,7 +637,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             if not self.download_dir.exists():
                 self.download_dir.mkdir(exist_ok=True, parents=True)
         else:
-            self.download_dir = Path(tempfile.TemporaryDirectory().name) #pylint:disable=consider-using-with
+            self.download_dir = Path(TemporaryDirectory().name) #pylint:disable=consider-using-with
 
     async def cleanup(self, guild):
         '''
@@ -760,32 +795,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         for queue_message in player.queue_messages:
             await queue_message.delete()
 
-    @commands.command(name='queue')
-    async def queue_(self, ctx):
-        '''
-        Show current song queue
-        '''
-        vc = ctx.voice_client
-
-        if not vc or not vc.is_connected():
-            return await ctx.send('I am not currently playing anything',
-                                  delete_after=self.delete_after)
-
-        player = self.get_player(ctx)
-        if player.play_queue.empty():
-            return await ctx.send('There are currently no more queued songs.',
-                                  delete_after=self.delete_after)
-
-        # Delete any old queue message regardless of on/off
-        for queue_message in player.queue_messages:
-            await queue_message.delete()
-        player.queue_messages = []
-
-        player.queue_strings = get_queue_message(player.play_queue)
-        if player.queue_strings is not None:
-            for table in player.queue_strings:
-                await ctx.send(f'{table}', delete_after=self.delete_after)
-
     @commands.command(name='history')
     async def history_(self, ctx):
         '''
@@ -835,15 +844,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                   delete_after=self.delete_after)
         player.play_queue.shuffle()
 
-        # Reset queue messages
-        for queue_message in player.queue_messages:
-            await queue_message.delete()
-
-        player.queue_strings = get_queue_message(player.play_queue)
-        player.queue_messages = []
-        if player.queue_strings is not None:
-            for table in player.queue_strings:
-                await ctx.send(f'{table}', delete_after=self.delete_after)
+        await player.update_queue_strings()
 
     @commands.command(name='remove')
     async def remove_item(self, ctx, queue_index):
@@ -877,18 +878,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         await ctx.send(f'Removed item {item["title"]} from queue',
                        delete_after=self.delete_after)
         remove_file_path(item['file_path'])
-        # Reset queue messages
-        for queue_message in player.queue_messages:
-            try:
-                await queue_message.delete()
-            except HTTPException:
-                pass
-
-        player.queue_strings = get_queue_message(player.play_queue)
-        player.queue_messages = []
-        if player.queue_strings is not None:
-            for table in player.queue_strings:
-                player.queue_messages.append(await ctx.send(table))
+        await player.update_queue_strings()
 
     @commands.command(name='bump')
     async def bump_item(self, ctx, queue_index):
@@ -922,18 +912,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         await ctx.send(f'Bumped item {item["title"]} to top of queue',
                        delete_after=self.delete_after)
 
-        # Reset queue messages
-        for queue_message in player.queue_messages:
-            try:
-                await queue_message.delete()
-            except HTTPException:
-                pass
-
-        player.queue_strings = get_queue_message(player.play_queue)
-        player.queue_messages = []
-        if player.queue_strings is not None:
-            for table in player.queue_strings:
-                player.queue_messages.append(await ctx.send(table))
+        await player.update_queue_strings()
 
     @commands.command(name='stop')
     async def stop_(self, ctx):
