@@ -221,7 +221,7 @@ def get_table_view(items, max_rows=15, show_queue_time=False):
                 delta = timedelta(seconds=duration)
                 table = f'{table} {str(delta):10} ||'
                 duration += item['duration']
-            table = f'{table} {item["title"]:48} || {uploader:16}'
+            table = f'{table} {item["title"]:48} || {uploader:32}'
             if count >= max_rows - 1:
                 break
         table_strings.append(f'```\n{table}\n```')
@@ -240,7 +240,7 @@ def get_queue_message(queue):
     for item in queue._queue: #pylint:disable=protected-access
         uploader = ''
         if item['uploader'] is not None:
-            uploader = clean_string(item['uploader'], max_length=16)
+            uploader = clean_string(item['uploader'], max_length=32)
         items.append({
             'title': clean_string(item['title'], max_length=48),
             'uploader': uploader,
@@ -248,7 +248,7 @@ def get_queue_message(queue):
         })
 
     table_strings = get_table_view(items, show_queue_time=True)
-    header = f'```{"Pos":3} || {"Queue Time":10} || {"Title":48} || {"Uploader":16}```'
+    header = f'```{"Pos":3} || {"Queue Time":10} || {"Title":48} || {"Uploader":32}```'
     return [header] + table_strings
 
 def get_finished_path(file_path):
@@ -815,14 +815,14 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         for item in player.history._queue: #pylint:disable=protected-access
             uploader = ''
             if item['uploader'] is not None:
-                uploader = clean_string(item['uploader'], max_length=16)
+                uploader = clean_string(item['uploader'], max_length=32)
             items.append({
                 'title': clean_string(item['title']),
                 'uploader': clean_string(uploader),
             })
 
         tables = get_table_view(items)
-        header = f'```{"Pos":3} || {"Title":48} || {"Uploader":16}```'
+        header = f'```{"Pos":3} || {"Title":48} || {"Uploader":32}```'
         await ctx.send(header, delete_after=self.delete_after)
         for table in tables:
             await ctx.send(table, delete_after=self.delete_after)
@@ -927,7 +927,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         await self.cleanup(ctx.guild)
 
-    async def __get_playlist(self, playlist_index, ctx): #pylint:disable=no-self-use
+    async def __get_playlist(self, playlist_index, ctx):
         try:
             index = int(playlist_index)
         except ValueError:
@@ -1197,7 +1197,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         for item in query:
             uploader = ''
             if item.uploader is not None:
-                uploader = clean_string(item.uploader)
+                uploader = clean_string(item.uploader, max_length=32)
             items.append({
                 'title': clean_string(item.title, max_length=48),
                 'uploader': uploader,
@@ -1207,7 +1207,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                   delete_after=self.delete_after)
 
         tables = get_table_view(items)
-        header = f'```{"Pos":3} || {"Title":48} || {"Uploader":16}```'
+        header = f'```{"Pos":3} || {"Title":48} || {"Uploader":32}```'
         await ctx.send(header, delete_after=self.delete_after)
         for table in tables:
             await ctx.send(table, delete_after=self.delete_after)
