@@ -588,13 +588,24 @@ class MusicPlayer:
                 await self.history.get()
                 self.history.put_nowait(source_dict)
 
+            if not self.play_queue.qsize():
+                self.np.delete()
+
     async def clear_remaining_queue(self):
         '''
         Delete files downloaded for queue
         '''
         while True:
+            # Clear download queue
             try:
-               # 5 seconds here is kind of random time, but wait if any leftover downloads happening
+               # 2 seconds here is kind of random time, but wait if any leftover downloads happening
+                async with timeout(2):
+                    await self.download_queue.get()
+            except asyncio.TimeoutError:
+                break
+            # Clear player queue
+            try:
+               # 2 seconds here is kind of random time, but wait if any leftover downloads happening
                 async with timeout(2):
                     source_dict = await self.play_queue.get()
                     if source_dict['file_path'].exists():
@@ -607,7 +618,6 @@ class MusicPlayer:
         Disconnect and cleanup the player.
         '''
         self.logger.info(f'Removing music bot from guild {self._guild}')
-        await self.clear_remaining_queue()
         self.bot.loop.create_task(self._cog.cleanup(guild))
 
 
@@ -649,6 +659,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             pass
 
         try:
+            if self.players[guild.id].np:
+                await self.players[guild.id].np.delete()
+            for queue_message in self.players[guild.id].queue_messages:
+                await queue_message.delete()
             await self.players[guild.id].clear_remaining_queue()
             del self.players[guild.id]
         except KeyError:
