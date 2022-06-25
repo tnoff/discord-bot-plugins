@@ -112,7 +112,8 @@ class Markov(CogHelper):
             if (datetime.now() - start).seconds > timeout:
                 raise Exception('Error acquiring markov lock')
             if self.lock_file.read_text() == 'locked':
-                await sleep(.01)
+                await sleep(.5)
+                continue
             break
         self.lock_file.write_text('locked')
 
