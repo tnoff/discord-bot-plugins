@@ -86,6 +86,8 @@ Play music in voice chat from youtube. Songs can be searched via string or a ful
 
 Playlists can be created to save songs to be played.
 
+Spotify playlists can be passed into the `!play` function, which will query Spotify API for track metadata and search for those tracks on youtube.
+
 ### Commands
 
 ```
