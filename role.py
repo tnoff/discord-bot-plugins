@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 
 from discord.ext import commands
 from discord.errors import NotFound
@@ -8,6 +9,8 @@ from sqlalchemy import ForeignKey
 from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
 
+# Time until we delete assignment messages, in seconds
+MESSAGE_EXPIRY_DEFAULT = 60 * 60 * 24 * 7
 
 EMOJI_MAPPING = {
     '\u0030\ufe0f\u20e3': ':zero:',
@@ -68,6 +71,7 @@ class RoleAssignment(CogHelper):
         super().__init__(bot, db_engine, logger, settings)
         BASE.metadata.create_all(self.db_engine)
         BASE.metadata.bind = self.db_engine
+        self.message_expiry_timeout = settings.get('role_assignment_expiry_timeout', MESSAGE_EXPIRY_DEFAULT)
         self.bot.loop.create_task(self.main_loop())
 
     async def main_loop(self):
@@ -82,8 +86,6 @@ class RoleAssignment(CogHelper):
         message_cache = {}
         role_cache = {}
 
-        # TODO delete messages after some amount of time
-
         while not self.bot.is_closed():
             # Go through each saved message in database
             # Save any you should delete
@@ -97,12 +99,18 @@ class RoleAssignment(CogHelper):
                     channel = self.bot.get_channel(int(assignment_message.channel_id))
                     try:
                         message = await channel.fetch_message(int(assignment_message.message_id))
-                        message_cache[assignment_message.message_id] = message
                     except NotFound:
                         self.logger.error(f'Unable to find message {assignment_message.id}'
                                           ' going to delete db entry')
                         will_delete.append(assignment_message)
                         continue
+                    delta = datetime.utcnow() - message.created_at
+                    delta_seconds = (delta.days * 60 * 60 * 24) + delta.seconds
+                    if delta_seconds > self.message_expiry_timeout:
+                        self.logger.info(f'Message "{message.id}" reached expiry, deleting')
+                        message.delete()
+                        continue
+                    message_cache[assignment_message.message_id] = message
 
                 # Get mapping of what reactions should go with which role
                 reaction_dict = {}

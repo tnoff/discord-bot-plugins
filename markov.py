@@ -234,7 +234,7 @@ class Markov(CogHelper):
             await sleep(300) # Every 5 minutes
 
     @commands.group(name='markov', invoke_without_command=False)
-    async def markov(self, ctx): #pylint:disable=no-self-use
+    async def markov(self, ctx):
         '''
         Markov functions
         '''
