@@ -1,6 +1,6 @@
 from asyncio import sleep
 from datetime import datetime, timedelta
-from random import choice, choices
+from random import choice
 from pathlib import Path
 from re import match, sub, MULTILINE
 from tempfile import NamedTemporaryFile
@@ -11,7 +11,6 @@ from discord.ext import commands
 from discord.errors import HTTPException, NotFound
 from sqlalchemy import Column, DateTime, Integer, String
 from sqlalchemy import ForeignKey, UniqueConstraint
-from sqlalchemy import func
 
 from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
@@ -103,26 +102,6 @@ class Markov(CogHelper):
 
         self.bot.loop.create_task(self.wait_loop())
 
-    async def acquire_lock(self, timeout=600):
-        '''
-        Wait for and acquire lock
-        '''
-        start = datetime.now()
-        while True:
-            if (datetime.now() - start).seconds > timeout:
-                raise Exception('Error acquiring markov lock')
-            if self.lock_file.read_text() == 'locked':
-                await sleep(.5)
-                continue
-            break
-        self.lock_file.write_text('locked')
-
-    async def release_lock(self):
-        '''
-        Release lock
-        '''
-        self.lock_file.write_text('unlocked')
-
     def __ensure_word(self, word):
         if len(word) >= MAX_WORD_LENGTH:
             self.logger.warning(f'Cannot add word "{word}", is too long')
@@ -167,7 +146,7 @@ class Markov(CogHelper):
             self.logger.debug(f'Using cutoff {retention_cutoff} for markov bot')
 
             for markov_channel in self.db_session.query(MarkovChannel).all():
-                await self.acquire_lock()
+                await sleep(.01) # Sleep one second just in case someone called a command
                 channel = await self.bot.fetch_channel(markov_channel.channel_id)
                 server = await self.bot.fetch_guild(markov_channel.server_id)
                 emoji_ids = [emoji.id for emoji in await server.fetch_emojis()]
@@ -220,15 +199,11 @@ class Markov(CogHelper):
                     markov_channel.last_message_id = str(message.id)
                     self.db_session.commit()
                 self.logger.debug(f'Done with channel {markov_channel.channel_id}')
-                await self.release_lock()
-                await sleep(.01) # Sleep one second just in case someone called a command
 
             # Clean up old messages
-            await self.acquire_lock()
             self.logger.debug('Attempting to delete old relations')
             self.db_session.query(MarkovRelation).filter(MarkovRelation.created_at < retention_cutoff).delete()
             self.db_session.commit()
-            await self.release_lock()
             # Wait until next loop
             self.logger.debug('Waiting 5 minutes for next markov iteration')
             await sleep(300) # Every 5 minutes
@@ -249,7 +224,6 @@ class Markov(CogHelper):
         return await self.retry_command(self.__on, ctx, non_db_exceptions=(HTTPException))
 
     async def __on(self, ctx):
-        await self.acquire_lock()
         # Ensure channel not already on
         markov = self.db_session.query(MarkovChannel).\
             filter(MarkovChannel.channel_id == str(ctx.channel.id)).\
@@ -268,9 +242,7 @@ class Markov(CogHelper):
         self.db_session.add(new_markov)
         self.db_session.commit()
         self.logger.info(f'Adding new markov channel {ctx.channel.id} from server {ctx.guild.id}')
-        await self.release_lock()
         return await ctx.send('Markov turned on for channel')
-
 
     @markov.command(name='off')
     async def off(self, ctx):
@@ -280,7 +252,6 @@ class Markov(CogHelper):
         return await self.retry_command(self.__off, ctx, non_db_exceptions=(HTTPException))
 
     async def __off(self, ctx):
-        await self.acquire_lock()
         # Ensure channel not already on
         markov_channel = self.db_session.query(MarkovChannel).\
             filter(MarkovChannel.channel_id == str(ctx.channel.id)).\
@@ -293,7 +264,6 @@ class Markov(CogHelper):
         self._delete_channel_relations(markov_channel.id)
         self.db_session.delete(markov_channel)
         self.db_session.commit()
-        await self.release_lock()
         return await ctx.send('Markov turned off for channel')
 
     @markov.command(name='speak')
@@ -314,7 +284,6 @@ class Markov(CogHelper):
         return await self.retry_command(self.__speak, ctx, first_word, sentence_length, non_db_exceptions=(HTTPException))
 
     async def __speak(self, ctx, first_word, sentence_length):
-        await self.acquire_lock()
         all_words = []
         first = None
         if first_word:
@@ -345,20 +314,12 @@ class Markov(CogHelper):
         # Save a cache layer to reduce db calls
         for _ in range(sentence_length + 1):
             # Get all leader ids first so you can pass it in
-            leader_ids = self.db_session.query(MarkovRelation.id).\
+            relation_ids = self.db_session.query(MarkovRelation.id).\
                     join(MarkovChannel, MarkovChannel.id == MarkovRelation.channel_id).\
                     filter(MarkovChannel.server_id == str(ctx.guild.id)).\
                     filter(MarkovRelation.leader_word == word)
-
-            possible_words = []
-            weights = []
-            # First generate basic ordered query to get the offsets from
-            for follower_word, count in self.db_session.query(MarkovRelation.follower_word, func.count(MarkovRelation.follower_word)).\
-                                                        filter(MarkovRelation.id.in_(leader_ids.subquery())).\
-                                                        group_by(MarkovRelation.follower_word):
-                possible_words.append(follower_word)
-                weights.append(count)
-            word = choices(possible_words, weights=weights)[0]
+            relation_ids = [i[0] for i in relation_ids]
+            # Get random choice of leader ids
+            word = self.db_session.query(MarkovRelation).get(choice(relation_ids)).follower_word
             all_words.append(word)
-        await self.release_lock()
         return await ctx.send(' '.join(markov_word for markov_word in all_words))
