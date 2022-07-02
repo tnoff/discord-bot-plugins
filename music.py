@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from async_timeout import timeout
 from discord import FFmpegPCMAudio
+from discord.errors import NotFound
 from discord.ext import commands
 from moviepy.editor import AudioFileClip, afx
 from requests import get as requests_get
@@ -39,6 +40,7 @@ MAX_SONG_LENGTH_DEFAULT = 60 * 15
 SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/api/token'
 SPOTIFY_BASE_URL = 'https://api.spotify.com/v1/'
 SPOTIFY_PLAYLIST_REGEX = r'^https://open.spotify.com/playlist/(?P<playlist_id>(.*))'
+SPOTIFY_ALBUM_REGEX = r'^https://open.spotify.com/album/(?P<album_id>(.*))'
 
 #
 # Music Tables
@@ -92,9 +94,6 @@ class SpotifyClient():
         self._expiry = None
         self.client_id = client_id
         self.client_secret = client_secret
-        self.headers = {
-            'Authorization': f'Bearer {self.token}'
-        }
 
     @property
     def token(self):
@@ -116,37 +115,55 @@ class SpotifyClient():
             'client_id': self.client_id,
             'client_secret': self.client_secret,
         })
+        if auth_response.status_code != 200:
+            raise Exception(f'Error getting auth token {auth_response.status_code}, {auth_response.text}')
         data = auth_response.json()
         self._token = data['access_token']
         self._expiry = datetime.now() + timedelta(seconds=data['expires_in'])
+
+    def __gather_track_info(self, first_url):
+        results = []
+        url = first_url
+        while True:
+            r = requests_get(url, headers={'Authorization': f'Bearer {self.token}'})
+            if r.status_code != 200:
+                return r, results
+            data = r.json()
+            # May or may not have 'tracks' key
+            try:
+                data = data['tracks']
+            except KeyError:
+                pass
+            for item in data['items']:
+                # May or may not have 'track' key
+                try:
+                    item = item['track']
+                except KeyError:
+                    pass
+                results.append({
+                    'track_name': item['name'],
+                    'track_artists': ', '.join(i['name'] for i in item['artists']),
+                })
+            try:
+                url = data['tracks']['next']
+            except KeyError:
+                return r, results
+        return r, results
 
     def playlist_get(self, playlist_id):
         '''
         Get playlist track info
         '''
         url = f'{SPOTIFY_BASE_URL}playlists/{playlist_id}'
-        playlist_results = []
-        while True:
-            r = requests_get(url, headers=self.headers)
-            if r.status_code != 200:
-                return r.status_code, playlist_results
-            playlist_data = r.json()
-            # May or may not have 'tracks' key
-            try:
-                playlist_data = playlist_data['tracks']
-            except KeyError:
-                pass
-            for item in playlist_data['items']:
-                playlist_results.append({
-                    'track_name': item['track']['name'],
-                    'album_name': item['track']['album']['name'],
-                    'track_artists': ', '.join(i['name'] for i in item['track']['artists']),
-                })
-            try:
-                url = playlist_data['tracks']['next']
-            except KeyError:
-                return r.status_code, playlist_results
-        return r.status_code, playlist_results
+        return self.__gather_track_info(url)
+
+    def album_get(self, album_id):
+        '''
+        Get album track info
+        '''
+        url = f'{SPOTIFY_BASE_URL}albums/{album_id}'
+        return self.__gather_track_info(url)
+
 
 # Music bot setup
 # Music taken from https://gist.github.com/EvieePy/ab667b74e9758433b3eb806c53a19f34
@@ -320,9 +337,14 @@ class DownloadClient():
         Create source from youtube search
         '''
         # If spotify, grab list of search strings, otherwise just grab single search
-        spotify_matcher = re_match(SPOTIFY_PLAYLIST_REGEX, search)
-        if spotify_matcher and self.spotify_client:
-            to_run = partial(self.__check_spotify_source, playlist_id=spotify_matcher.group('playlist_id'))
+        spotify_playlist_matcher = re_match(SPOTIFY_PLAYLIST_REGEX, search)
+        spotify_album_matcher = re_match(SPOTIFY_ALBUM_REGEX, search)
+        if spotify_playlist_matcher and self.spotify_client:
+            to_run = partial(self.__check_spotify_source, playlist_id=spotify_playlist_matcher.group('playlist_id'))
+            search_strings = await loop.run_in_executor(None, to_run)
+            self.logger.debug(f'Gathered {len(search_strings)} from spotify playlist "{search}"')
+        elif spotify_album_matcher and self.spotify_client:
+            to_run = partial(self.__check_spotify_source, album_id=spotify_album_matcher.group('album_id'))
             search_strings = await loop.run_in_executor(None, to_run)
             self.logger.debug(f'Gathered {len(search_strings)} from spotify playlist "{search}"')
         else:
@@ -375,14 +397,22 @@ class DownloadClient():
             return None
         return entries
 
-    def __check_spotify_source(self, playlist_id):
-        self.logger.debug(f'Checking for spotify playlist {playlist_id}')
-        status_code, playlist_data = self.spotify_client.playlist_get(playlist_id)
-        if status_code != 200:
-            self.logger.error(f'Unable to find spotify playlist {playlist_id}')
-            return []
+    def __check_spotify_source(self, playlist_id=None, album_id=None):
+        data = []
+        if playlist_id:
+            self.logger.debug(f'Checking for spotify playlist {playlist_id}')
+            response, data = self.spotify_client.playlist_get(playlist_id)
+            if response.status_code != 200:
+                self.logger.error(f'Unable to find spotify data {response.status_code}, {response.text}')
+                return []
+        if album_id:
+            self.logger.debug(f'Checking for spotify album {album_id}')
+            response, data = self.spotify_client.album_get(album_id)
+            if response.status_code != 200:
+                self.logger.error(f'Unable to find spotify data {response.status_code}, {response.text}')
+                return []
         search_strings = []
-        for item in playlist_data:
+        for item in data:
             search_string = f'{item["track_name"]} {item["track_artists"]}'
             search_strings.append(search_string)
         return search_strings
@@ -520,6 +550,29 @@ class MusicPlayer:
             # Wait 10 seconds so we dont blast youtube api
             await asyncio.sleep(10)
 
+    async def __reset_now_playing_message(self, message):
+        last_message_check = None
+        if self.queue_messages:
+            last_message_check = await self.check_latest_message(self.queue_messages[-1])
+        # Double check np message exists
+        if self.np:
+            try:
+                await self._channel.fetch_message(self.np.id)
+            except NotFound:
+                self.np = None
+        # If not exists, send
+        if self.np is None:
+            self.np = await self._channel.send(message)
+            return True
+        # If message after existing queue, print
+        if not last_message_check:
+            await self.np.delete()
+            self.np = await self._channel.send(message)
+            return True
+        await self.np.edit(content=message)
+        return False
+
+
     async def player_loop(self):
         '''
         Our main player loop.
@@ -561,19 +614,10 @@ class MusicPlayer:
                              f'by "{source_dict["requester"]}" in guild "{self._guild}", url '
                              f'"{source_dict["webpage_url"]}"')
             message = f'Now playing {source_dict["webpage_url"]} requested by {source_dict["requester"]}'
-            last_message_check = False
-            if self.queue_messages:
-                last_message_check = await self.check_latest_message(self.queue_messages[-1])
-            if self.np is None:
-                self.np = await self._channel.send(message)
-            elif not last_message_check:
-                await self.np.delete()
-                self.np = await self._channel.send(message)
-            else:
-                await self.np.edit(content=message)
+            delete_messages = await self.__reset_now_playing_message(message)
 
             await asyncio.sleep(1)
-            await self.update_queue_strings(delete_messages=not last_message_check)
+            await self.update_queue_strings(delete_messages=delete_messages)
 
             await self.next.wait()
 
@@ -588,8 +632,9 @@ class MusicPlayer:
                 await self.history.get()
                 self.history.put_nowait(source_dict)
 
-            if not self.play_queue.qsize():
+            if self.play_queue.empty() and self.download_queue.empty():
                 self.np.delete()
+                self.np = None
 
     async def clear_remaining_queue(self):
         '''
@@ -659,14 +704,19 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             pass
 
         try:
-            if self.players[guild.id].np:
-                await self.players[guild.id].np.delete()
-            for queue_message in self.players[guild.id].queue_messages:
-                await queue_message.delete()
-            await self.players[guild.id].clear_remaining_queue()
-            del self.players[guild.id]
+            player = self.players[guild.id]
         except KeyError:
+            return
+
+        try:
+            if player.np:
+                player.np.delete()
+        except NotFound:
             pass
+        for queue_message in player.queue_messages:
+            await queue_message.delete()
+        player.clear_remaining_queue()
+        del self.players[guild.id]
 
     async def __check_database_session(self, ctx):
         '''
