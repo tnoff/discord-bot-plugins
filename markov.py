@@ -221,6 +221,8 @@ class Markov(CogHelper):
         '''
         Turn markov on for channel
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         return await self.retry_command(self.__on, ctx, non_db_exceptions=(HTTPException))
 
     async def __on(self, ctx):
@@ -249,6 +251,8 @@ class Markov(CogHelper):
         '''
         Turn markov off for channel
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         return await self.retry_command(self.__off, ctx, non_db_exceptions=(HTTPException))
 
     async def __off(self, ctx):
@@ -281,6 +285,8 @@ class Markov(CogHelper):
         Note that for first_word, multiple words can be given, but they must be in quotes
         Ex: !markov speak "hey whats up", or !markov speak "hey whats up" 64
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         return await self.retry_command(self.__speak, ctx, first_word, sentence_length, non_db_exceptions=(HTTPException))
 
     async def __speak(self, ctx, first_word, sentence_length):

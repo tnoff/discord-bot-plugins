@@ -151,6 +151,8 @@ class Twitter(CogHelper):
         twitter_account :   Twitter account name to subscribe to
         show_all_posts  :   To show all posts, including retweets and replies use "show-all"
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         return await self.retry_command(self.__subscribe, ctx, twitter_account, show_all_posts)
 
     async def __subscribe(self, ctx, twitter_account, show_all_posts):
@@ -204,6 +206,8 @@ class Twitter(CogHelper):
         '''
         Unsubscribe channel from twitter account
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         return await self.retry_command(self.__unsubscribe, ctx, twitter_account)
 
     async def __unsubscribe(self, ctx, twitter_account):
@@ -235,6 +239,8 @@ class Twitter(CogHelper):
         '''
         List channel subscriptions
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         return await self.retry_command(self.__subscribe_list, ctx)
 
     async def __subscribe_list(self, ctx):
@@ -260,6 +266,8 @@ class Twitter(CogHelper):
         twitter_account :   Twitter account name to add filter to, must already be subscribed
         regex_filter    :   Python regex filter, only posts that match filter will be shown
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         return await self.retry_command(self.__add_filter, ctx, twitter_account, regex_filter)
 
     async def __add_filter(self, ctx, twitter_account, regex_filter):
@@ -305,6 +313,8 @@ class Twitter(CogHelper):
         twitter_account :   Twitter account name to remove filter from, must already be subscribed
         regex_filter    :   Python regex filter
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         return await self.retry_command(self.__remove_filter, ctx, twitter_account, regex_filter)
 
     async def __remove_filter(self, ctx, twitter_account, regex_filter):
@@ -337,6 +347,8 @@ class Twitter(CogHelper):
 
         twitter_account :   Twitter account name to list filters for, must already be subscribed
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         return await self.retry_command(self.__list_filters, ctx, twitter_account)
 
     async def __list_filters(self, ctx, twitter_account):

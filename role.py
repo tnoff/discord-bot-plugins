@@ -162,6 +162,8 @@ class RoleAssignment(CogHelper):
         Generate message with all roles.
         Users can reply to this message to add roles to themselves.
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         return await self.retry_command(self.__roles, ctx)
 
     async def __roles(self, ctx):

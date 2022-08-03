@@ -857,6 +857,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         '''
         Connect to voice channel.
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         return await self.retry_command(self.__connect, ctx)
 
     async def __connect(self, ctx):
@@ -891,6 +893,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             The song to search and retrieve from youtube.
             This could be a simple search, an ID or URL.
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         vc = ctx.voice_client
@@ -912,6 +916,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         '''
         Skip the song.
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         vc = ctx.voice_client
@@ -931,6 +937,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         '''
         Clear all items from queue
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         vc = ctx.voice_client
@@ -956,6 +964,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         '''
         Show recently played songs
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         vc = ctx.voice_client
@@ -990,6 +1000,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         '''
         Shuffle song queue.
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         vc = ctx.voice_client
@@ -1014,6 +1026,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         queue_index: integer [Required]
             Position in queue of song that will be removed.
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         vc = ctx.voice_client
@@ -1050,6 +1064,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         queue_index: integer [Required]
             Position in queue of song that will be removed.
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         vc = ctx.voice_client
@@ -1083,6 +1099,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         '''
         Stop the currently playing song and disconnect bot from voice chat.
         '''
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         vc = ctx.voice_client
@@ -1122,6 +1140,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             await ctx.send('Invalid sub command passed...', delete_after=self.delete_after)
 
     async def __playlist_create(self, ctx, name):
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
@@ -1160,6 +1180,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         return await self.retry_command(self.__playlist_list, ctx)
 
     async def __playlist_list(self, ctx, max_rows=15):
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
@@ -1224,6 +1246,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         return await self.retry_command(self.__playlist_item_add, ctx, playlist_index, search)
 
     async def __playlist_item_add(self, ctx, playlist_index, search):
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
@@ -1265,6 +1289,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         return await self.retry_command(self.__playlist_item_search, ctx, playlist_index, search)
 
     async def __playlist_item_search(self, ctx, playlist_index, search, max_rows=15):
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
@@ -1320,6 +1346,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         return await self.retry_command(self.__playlist_item_remove, ctx, playlist_index, song_index)
 
     async def __playlist_item_remove(self, ctx, playlist_index, song_index):
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
@@ -1361,6 +1389,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         return await self.retry_command(self.__playlist_show, ctx, playlist_index)
 
     async def __playlist_show(self, ctx, playlist_index):
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
@@ -1402,6 +1432,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         return await self.retry_command(self.__playlist_delete, ctx, playlist_index)
 
     async def __playlist_delete(self, ctx, playlist_index):
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
@@ -1431,6 +1463,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         return await self.retry_command(self.__playlist_rename, ctx, playlist_index, playlist_name)
 
     async def __playlist_rename(self, ctx, playlist_index, playlist_name):
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
@@ -1505,6 +1539,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         return await self.retry_command(self.__playlist_queue, ctx, playlist_index, sub_command)
 
     async def __playlist_queue(self, ctx, playlist_index, sub_command):
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
@@ -1556,6 +1592,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         return await self.retry_command(self.__playlist_cleanup, ctx, playlist_index)
 
     async def __playlist_cleanup(self, ctx, playlist_index):
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
@@ -1599,6 +1637,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         return await self.retry_command(self.__playlist_merge, ctx, playlist_index_one, playlist_index_two)
 
     async def __playlist_merge(self, ctx, playlist_index_one, playlist_index_two):
+        if not await self.check_user_role(ctx):
+            return await ctx.send('Unable to verify user role, ignoring command')
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
