@@ -108,7 +108,9 @@ class RoleAssignment(CogHelper):
                     delta_seconds = (delta.days * 60 * 60 * 24) + delta.seconds
                     if delta_seconds > self.message_expiry_timeout:
                         self.logger.info(f'Message "{message.id}" reached expiry, deleting')
-                        message.delete()
+                        self.db_session.query(RoleAssignmentReaction).\
+                            filter(RoleAssignmentReaction.role_assignment_message_id == assignment_message.id).delete()
+                        await message.delete()
                         self.db_session.delete(assignment_message)
                         self.db_session.commit()
                         continue
