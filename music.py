@@ -846,8 +846,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not check_voice_chats:
             return channel
 
-        if channel.id not in [vc.channel.id for vc in ctx.bot.voice_clients]:
-            await ctx.send('User not joined to any channel bot is in, ignoring command',
+        if channel.guild.id is not ctx.guild.id:
+            await ctx.send('User not joined to channel bot is in, ignoring command',
                            delete_after=self.delete_after)
             return False
         return channel
