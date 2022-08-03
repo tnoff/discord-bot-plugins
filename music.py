@@ -165,12 +165,37 @@ class SpotifyClient():
         return self.__gather_track_info(url)
 
 
+class PutsBlocked(Exception):
+    '''
+    Puts Blocked on Queue
+    '''
+
 # Music bot setup
 # Music taken from https://gist.github.com/EvieePy/ab667b74e9758433b3eb806c53a19f34
 class MyQueue(asyncio.Queue):
     '''
     Custom implementation of asyncio Queue
     '''
+    def __init__(self, maxsize=0):
+        self.shutdown = False
+        super().__init__(maxsize=maxsize)
+
+    def block(self):
+        '''
+        Block future puts, for when queue should be in shutdown
+        '''
+        self.shutdown = True
+
+    def put_nowait(self, item):
+        if self.shutdown:
+            raise PutsBlocked('Puts Blocked on Queue')
+        super().put_nowait(item)
+
+    async def put(self, item):
+        if self.shutdown:
+            raise PutsBlocked('Puts Blocked on Queue')
+        await super().put(item)
+
     def shuffle(self):
         '''
         Shuffle queue
@@ -332,9 +357,11 @@ class DownloadClient():
         to_run = partial(self.__prepare_data_source, source_dict=source_dict)
         return await loop.run_in_executor(None, to_run)
 
-    async def check_source(self, ctx, search, loop, max_song_length=None, download_queue=None):
+    async def __check_source_types(self, search, loop):
         '''
-        Create source from youtube search
+        Check the source type of the search given
+
+        If spotify type, grab info from spotify api and get proper search terms for youtube
         '''
         # If spotify, grab list of search strings, otherwise just grab single search
         spotify_playlist_matcher = re_match(SPOTIFY_PLAYLIST_REGEX, search)
@@ -346,16 +373,22 @@ class DownloadClient():
             if spotify_playlist_matcher.group('shuffle'):
                 random.shuffle(search_strings)
             self.logger.debug(f'Gathered {len(search_strings)} from spotify playlist "{search}"')
+            return search_strings
 
-        elif spotify_album_matcher and self.spotify_client:
+        if spotify_album_matcher and self.spotify_client:
             to_run = partial(self.__check_spotify_source, album_id=spotify_album_matcher.group('album_id'))
             search_strings = await loop.run_in_executor(None, to_run)
             if spotify_album_matcher.group('shuffle'):
                 random.shuffle(search_strings)
             self.logger.debug(f'Gathered {len(search_strings)} from spotify playlist "{search}"')
+            return search_strings
+        return [search]
 
-        else:
-            search_strings = [search]
+    async def check_source(self, ctx, search, loop, max_song_length=None, download_queue=None):
+        '''
+        Create source from youtube search
+        '''
+        search_strings = await self.__check_source_types(search, loop)
 
         all_entries = []
         for search_string in search_strings:
@@ -383,6 +416,9 @@ class DownloadClient():
                         self.logger.warning(f'Queue too full, skipping song "{entry["title"]}"')
                         await ctx.send('Queue is full, cannot add more songs',
                                        delete_after=self.delete_after)
+                        return all_entries
+                    except PutsBlocked:
+                        self.logger.warning('Puts to queue is currently blocked, assuming shutdown')
                         return all_entries
             # Wait 1 second so we dont blast youtube
             await asyncio.sleep(1)
@@ -534,6 +570,10 @@ class MusicPlayer:
         Update queue message in channel
         '''
         await self.acquire_lock()
+        if self.play_queue.shutdown:
+            await self.release_lock()
+            return
+
         self.logger.debug(f'Updating queue messages in channel {self._channel.id}')
         new_queue_strings = get_queue_message(self.play_queue) or []
         if delete_messages or len(self.queue_messages) != len(new_queue_strings):
@@ -564,6 +604,11 @@ class MusicPlayer:
             except asyncio.QueueFull:
                 await self._channel.send('Queue is full, cannot add more songs',
                                          delete_after=self.delete_after)
+                await asyncio.sleep(1)
+                continue
+            except PutsBlocked:
+                self.logger.warning('Puts Blocked on queue, assuming shutdown')
+                await asyncio.sleep(1)
                 continue
             await self.update_queue_strings()
             # Wait 1 second so we dont blast youtube api
@@ -652,13 +697,21 @@ class MusicPlayer:
                 self.history.put_nowait(source_dict)
 
             if self.play_queue.empty() and self.download_queue.empty():
-                await self.np.delete()
+                try:
+                    await self.np.delete()
+                except NotFound:
+                    pass
                 self.np = None
 
     async def clear_remaining_queue(self):
         '''
         Delete files downloaded for queue
         '''
+        # Block puts first on download queue
+        self.download_queue.block()
+        self.play_queue.block()
+        # Wait about 10 seconds before we start clearing out queue
+        await asyncio.sleep(10)
         while True:
             # Clear download queue
             try:
@@ -734,7 +787,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             pass
         await player.clear_queue_messages()
         await player.clear_remaining_queue()
-        del self.players[guild.id]
+        # See if we need to delete
+        try:
+            del self.players[guild.id]
+        except KeyError:
+            pass
 
     async def __check_database_session(self, ctx):
         '''
