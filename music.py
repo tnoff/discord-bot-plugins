@@ -39,8 +39,8 @@ MAX_SONG_LENGTH_DEFAULT = 60 * 15
 # Spotify
 SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/api/token'
 SPOTIFY_BASE_URL = 'https://api.spotify.com/v1/'
-SPOTIFY_PLAYLIST_REGEX = r'^https://open.spotify.com/playlist/(?P<playlist_id>(.*))'
-SPOTIFY_ALBUM_REGEX = r'^https://open.spotify.com/album/(?P<album_id>(.*))'
+SPOTIFY_PLAYLIST_REGEX = r'^https://open.spotify.com/playlist/(?P<playlist_id>([a-zA-Z0-9]+))(?P<extra_query>(\?[a-zA-Z0-9=&_-]+)?)(?P<shuffle>( shuffle)?)'
+SPOTIFY_ALBUM_REGEX = r'^https://open.spotify.com/album/(?P<album_id>([a-zA-Z0-9]+))(?P<extra_query>(\?[a-zA-Z0-9=&_-]+)?)(?P<shuffle>( shuffle)?)'
 
 #
 # Music Tables
@@ -339,16 +339,24 @@ class DownloadClient():
         # If spotify, grab list of search strings, otherwise just grab single search
         spotify_playlist_matcher = re_match(SPOTIFY_PLAYLIST_REGEX, search)
         spotify_album_matcher = re_match(SPOTIFY_ALBUM_REGEX, search)
+
         if spotify_playlist_matcher and self.spotify_client:
             to_run = partial(self.__check_spotify_source, playlist_id=spotify_playlist_matcher.group('playlist_id'))
             search_strings = await loop.run_in_executor(None, to_run)
+            if spotify_playlist_matcher.group('shuffle'):
+                random.shuffle(search_strings)
             self.logger.debug(f'Gathered {len(search_strings)} from spotify playlist "{search}"')
+
         elif spotify_album_matcher and self.spotify_client:
             to_run = partial(self.__check_spotify_source, album_id=spotify_album_matcher.group('album_id'))
             search_strings = await loop.run_in_executor(None, to_run)
+            if spotify_album_matcher.group('shuffle'):
+                random.shuffle(search_strings)
             self.logger.debug(f'Gathered {len(search_strings)} from spotify playlist "{search}"')
+
         else:
             search_strings = [search]
+
         all_entries = []
         for search_string in search_strings:
             to_run = partial(self.__run_search, search_string=search_string)
@@ -356,10 +364,11 @@ class DownloadClient():
             if data_entries is None:
                 return await ctx.send(f'Unable to find youtube source for "{search_string}"',
                                     delete_after=self.delete_after)
+
             for entry in data_entries:
                 if max_song_length and entry['duration'] > max_song_length:
                     await ctx.send(f'Unable to add "<{entry["webpage_url"]}>" to queue, exceeded max length '
-                                   f'{max_song_length} seconds')
+                                   f'{max_song_length} seconds', delete_after=self.delete_after)
                     continue
                 entry['guild_id'] = ctx.guild.id
                 entry['requester'] = f'{ctx.author.name}'
@@ -375,8 +384,8 @@ class DownloadClient():
                         await ctx.send('Queue is full, cannot add more songs',
                                        delete_after=self.delete_after)
                         return all_entries
-            # Wait 10 seconds so we dont blast youtube apis
-            await asyncio.sleep(10)
+            # Wait 1 second so we dont blast youtube
+            await asyncio.sleep(1)
         return all_entries
 
     def __run_search(self, search_string):
@@ -510,6 +519,16 @@ class MusicPlayer:
         history = await self._channel.history(limit=1).flatten()
         return history[0].id == last_message_id
 
+    async def clear_queue_messages(self):
+        '''
+        Delete queue messages
+        '''
+        await self.acquire_lock()
+        for queue_message in self.queue_messages:
+            await queue_message.delete()
+        self.queue_messages = []
+        await self.release_lock()
+
     async def update_queue_strings(self, delete_messages=False):
         '''
         Update queue message in channel
@@ -547,8 +566,8 @@ class MusicPlayer:
                                          delete_after=self.delete_after)
                 continue
             await self.update_queue_strings()
-            # Wait 10 seconds so we dont blast youtube api
-            await asyncio.sleep(10)
+            # Wait 1 second so we dont blast youtube api
+            await asyncio.sleep(1)
 
     async def __reset_now_playing_message(self, message):
         last_message_check = None
@@ -633,7 +652,7 @@ class MusicPlayer:
                 self.history.put_nowait(source_dict)
 
             if self.play_queue.empty() and self.download_queue.empty():
-                self.np.delete()
+                await self.np.delete()
                 self.np = None
 
     async def clear_remaining_queue(self):
@@ -710,12 +729,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         try:
             if player.np:
-                player.np.delete()
+                await player.np.delete()
         except NotFound:
             pass
-        for queue_message in player.queue_messages:
-            await queue_message.delete()
-        player.clear_remaining_queue()
+        await player.clear_queue_messages()
+        await player.clear_remaining_queue()
         del self.players[guild.id]
 
     async def __check_database_session(self, ctx):
@@ -856,8 +874,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                        delete_after=self.delete_after)
 
         # Reset queue messages
-        for queue_message in player.queue_messages:
-            await queue_message.delete()
+        await player.clear_queue_messages()
+        await player.clear_remaining_queue()
 
     @commands.command(name='history')
     async def history_(self, ctx):
