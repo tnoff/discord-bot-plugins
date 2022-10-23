@@ -363,6 +363,8 @@ class DownloadClient():
 
         If spotify type, grab info from spotify api and get proper search terms for youtube
         '''
+        await ctx.send(f'Checking availability of source "{search}"',
+                       delete_after=self.delete_after)
         # If spotify, grab list of search strings, otherwise just grab single search
         spotify_playlist_matcher = re_match(SPOTIFY_PLAYLIST_REGEX, search)
         spotify_album_matcher = re_match(SPOTIFY_ALBUM_REGEX, search)
@@ -535,7 +537,7 @@ class MusicPlayer:
         start = datetime.now()
         while True:
             if (datetime.now() - start).seconds > wait_timeout:
-                raise Exception('Error acquiring markov lock')
+                raise Exception('Error acquiring player lock lock')
             if self.lock_file.read_text() == 'locked':
                 await asyncio.sleep(.5)
                 continue
