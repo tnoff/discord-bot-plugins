@@ -36,11 +36,17 @@ QUEUE_MAX_SIZE_DEFAULT = 128
 # Max song length
 MAX_SONG_LENGTH_DEFAULT = 60 * 15
 
+# Timeout for web requests
+REQUESTS_TIMEOUT = 180
+
 # Spotify
 SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/api/token'
 SPOTIFY_BASE_URL = 'https://api.spotify.com/v1/'
-SPOTIFY_PLAYLIST_REGEX = r'^https://open.spotify.com/playlist/(?P<playlist_id>([a-zA-Z0-9]+))(?P<extra_query>(\?[a-zA-Z0-9=&_-]+)?)(?P<shuffle>( shuffle)?)'
-SPOTIFY_ALBUM_REGEX = r'^https://open.spotify.com/album/(?P<album_id>([a-zA-Z0-9]+))(?P<extra_query>(\?[a-zA-Z0-9=&_-]+)?)(?P<shuffle>( shuffle)?)'
+YOUTUBE_BASE_URL =  'https://www.googleapis.com/youtube/v3/playlistItems'
+
+SPOTIFY_PLAYLIST_REGEX = r'^https://open.spotify.com/playlist/(?P<playlist_id>([a-zA-Z0-9]+))(?P<extra_query>(\?[a-zA-Z0-9=&_-]+)?)(?P<shuffle>( *shuffle)?)'
+SPOTIFY_ALBUM_REGEX = r'^https://open.spotify.com/album/(?P<album_id>([a-zA-Z0-9]+))(?P<extra_query>(\?[a-zA-Z0-9=&_-]+)?)(?P<shuffle>( *shuffle)?)'
+YOUTUBE_PLAYLIST_REGEX = '^https://(www.)?youtube.com/playlist\?list=(?P<playlist_id>[a-zA-Z0-9_-]+)(?P<shuffle> *(shuffle)?)'
 
 #
 # Music Tables
@@ -77,6 +83,19 @@ class PlaylistItem(BASE):
     uploader = Column(String(256))
     playlist_id = Column(Integer, ForeignKey('playlist.id'))
 
+#
+# Exceptions
+#
+
+class PutsBlocked(Exception):
+    '''
+    Puts Blocked on Queue
+    '''
+
+class SongTooLong(Exception):
+    '''
+    Max length of song duration exceeded
+    '''
 
 #
 # Spotify Client
@@ -114,7 +133,7 @@ class SpotifyClient():
             'grant_type': 'client_credentials',
             'client_id': self.client_id,
             'client_secret': self.client_secret,
-        })
+        }, timeout=REQUESTS_TIMEOUT)
         if auth_response.status_code != 200:
             raise Exception(f'Error getting auth token {auth_response.status_code}, {auth_response.text}')
         data = auth_response.json()
@@ -125,7 +144,7 @@ class SpotifyClient():
         results = []
         url = first_url
         while True:
-            r = requests_get(url, headers={'Authorization': f'Bearer {self.token}'})
+            r = requests_get(url, headers={'Authorization': f'Bearer {self.token}'}, timeout=REQUESTS_TIMEOUT)
             if r.status_code != 200:
                 return r, results
             data = r.json()
@@ -164,11 +183,46 @@ class SpotifyClient():
         url = f'{SPOTIFY_BASE_URL}albums/{album_id}'
         return self.__gather_track_info(url)
 
+#
+# Youtube API Client
+#
+class YoutubeAPI():
+    '''
+    Get info from youtube api
+    '''
+    def __init__(self, api_key):
+        '''
+        Init youtube api client
+        api_key     :   Google developer api key
+        '''
+        self.api_key = api_key
 
-class PutsBlocked(Exception):
-    '''
-    Puts Blocked on Queue
-    '''
+    def playlist_list_items(self, playlist_id):
+        '''
+        List all video Ids in playlist
+        playlist_id     :   ID of youtube playlist
+        '''
+        token = None
+        results = []
+        while True:
+            url = f'{YOUTUBE_BASE_URL}?key={self.api_key}&playlistId={playlist_id}&part=snippet'
+            if token:
+                url = f'{url}&pageToken={token}'
+            req = requests_get(url, timeout=REQUESTS_TIMEOUT)
+            if req.status_code != 200:
+                return req, results
+            for item in req.json()['items']:
+                if item['kind'] != 'youtube#playlistItem':
+                    continue
+                resource = item['snippet']['resourceId']
+                if resource['kind'] != 'youtube#video':
+                    continue
+                results.append(resource['videoId'])
+            try:
+                token = req.json()['nextPageToken']
+            except KeyError:
+                return req, results
+        return req, results
 
 # Music bot setup
 # Music taken from https://gist.github.com/EvieePy/ab667b74e9758433b3eb806c53a19f34
@@ -331,116 +385,73 @@ def edit_audio_file(file_path):
         # File likely was deleted in middle
         return None
 
+def max_song_filter_generator(max_song_length):
+    '''
+    Get function for filtering max song length
+    '''
+    def max_song_filter(info, *, incomplete): #pylint:disable=unused-argument
+        '''
+        Filter song based on max song length
+        '''
+        duration = info.get('duration')
+        if duration and duration > max_song_length:
+            raise SongTooLong(f'Song exceeds max length of {max_song_length}')
+    return max_song_filter
+
 class DownloadClient():
     '''
     Download Client using yt-dlp
     '''
-    def __init__(self, ytdl, logger, spotify_client=None, delete_after=None, enable_audio_processing=False):
+    def __init__(self, ytdl, logger, spotify_client=None, youtube_client=None,
+                 delete_after=None, enable_audio_processing=False):
         self.ytdl = ytdl
         self.logger = logger
         self.spotify_client = spotify_client
+        self.youtube_client = youtube_client
         self.delete_after = delete_after
         self.enable_audio_processing = enable_audio_processing
 
-    def __getitem__(self, item: str):
+    def __prepare_data_source(self, source_dict, download=True):
         '''
-        Allows us to access attributes similar to a dict.
-
-        This is only useful when you are NOT downloading.
+        Prepare source from youtube url
         '''
-        return self.__getattribute__(item)
+        self.logger.info(f'Starting download of video "{source_dict["search_string"]}"')
+        try:
+            data = self.ytdl.extract_info(source_dict['search_string'], download=download)
+        except DownloadError:
+            self.logger.error(f'Error downloading youtube search "{source_dict["search_string"]}')
+            return None
+        # Make sure we get the first entry here
+        # Since we don't pass "url" directly anymore
+        try:
+            data = data['entries'][0]
+        except KeyError:
+            pass
+        file_path = Path(self.ytdl.prepare_filename(data))
+        self.logger.info(f'Downloaded url "{data["webpage_url"]} to file "{file_path}"')
+        # The modified time of download videos can be the time when it was actually uploaded to youtube
+        # Touch here to update the modified time, so that the cleanup check works as intendend
+        file_path.touch(exist_ok=True)
+        # Rename file to a random uuid name, that way we can have diff videos with same/similar names
+        uuid_path = file_path.parent / f'{uuid4()}{".".join(i for i in file_path.suffixes)}'
+        file_path.rename(uuid_path)
+        self.logger.info(f'Moved downloaded url "{data["webpage_url"]} to file "{uuid_path}"')
+        data['requester'] = source_dict['requester']
+        data['guild_id'] = source_dict['guild_id']
+        data['file_path'] = uuid_path
+        if self.enable_audio_processing:
+            edited_path = edit_audio_file(uuid_path)
+            if edited_path:
+                data['file_path'] = edited_path
+                uuid_path.unlink()
+        return data
 
-    async def create_source(self, source_dict, loop):
+    async def create_source(self, source_dict, loop, download=False):
         '''
         Download data from youtube search
         '''
-        to_run = partial(self.__prepare_data_source, source_dict=source_dict)
+        to_run = partial(self.__prepare_data_source, source_dict=source_dict, download=download)
         return await loop.run_in_executor(None, to_run)
-
-    async def __check_source_types(self, search, loop):
-        '''
-        Check the source type of the search given
-
-        If spotify type, grab info from spotify api and get proper search terms for youtube
-        '''
-        # If spotify, grab list of search strings, otherwise just grab single search
-        spotify_playlist_matcher = re_match(SPOTIFY_PLAYLIST_REGEX, search)
-        spotify_album_matcher = re_match(SPOTIFY_ALBUM_REGEX, search)
-
-        if spotify_playlist_matcher and self.spotify_client:
-            to_run = partial(self.__check_spotify_source, playlist_id=spotify_playlist_matcher.group('playlist_id'))
-            search_strings = await loop.run_in_executor(None, to_run)
-            if spotify_playlist_matcher.group('shuffle'):
-                random.shuffle(search_strings)
-            self.logger.debug(f'Gathered {len(search_strings)} from spotify playlist "{search}"')
-            return search_strings
-
-        if spotify_album_matcher and self.spotify_client:
-            to_run = partial(self.__check_spotify_source, album_id=spotify_album_matcher.group('album_id'))
-            search_strings = await loop.run_in_executor(None, to_run)
-            if spotify_album_matcher.group('shuffle'):
-                random.shuffle(search_strings)
-            self.logger.debug(f'Gathered {len(search_strings)} from spotify playlist "{search}"')
-            return search_strings
-        return [search]
-
-    async def check_source(self, ctx, search, loop, max_song_length=None, download_queue=None):
-        '''
-        Create source from youtube search
-        '''
-        search_strings = await self.__check_source_types(search, loop)
-
-        all_entries = []
-        for search_string in search_strings:
-            to_run = partial(self.__run_search, search_string=search_string)
-            data_entries = await loop.run_in_executor(None, to_run)
-            if data_entries is None:
-                return await ctx.send(f'Unable to find youtube source for "{search_string}"',
-                                    delete_after=self.delete_after)
-
-            for entry in data_entries:
-                if max_song_length and entry['duration'] > max_song_length:
-                    await ctx.send(f'Unable to add "<{entry["webpage_url"]}>" to queue, exceeded max length '
-                                   f'{max_song_length} seconds', delete_after=self.delete_after)
-                    continue
-                entry['guild_id'] = ctx.guild.id
-                entry['requester'] = f'{ctx.author.name}'
-                if not download_queue:
-                    all_entries.append(entry)
-                else:
-                    try:
-                        self.logger.debug(f'Handing off song song "{entry["title"]}" with url "{entry["webpage_url"]}" to download queue')
-                        download_queue.put_nowait(entry)
-                    except asyncio.QueueFull:
-                        # Return here since we probably cant find any more entries
-                        self.logger.warning(f'Queue too full, skipping song "{entry["title"]}"')
-                        await ctx.send('Queue is full, cannot add more songs',
-                                       delete_after=self.delete_after)
-                        return all_entries
-                    except PutsBlocked:
-                        self.logger.warning('Puts to queue is currently blocked, assuming shutdown')
-                        return all_entries
-            # Wait 1 second so we dont blast youtube
-            await asyncio.sleep(1)
-        return all_entries
-
-    def __run_search(self, search_string):
-        try:
-            entry_data = self.ytdl.extract_info(url=search_string, download=False)
-        except DownloadError:
-            self.logger.error(f'Error downloading youtube search {search_string}')
-            return None
-        try:
-            entries = entry_data['entries']
-        except KeyError:
-            # Sometimes direct search returns a single item
-            if 'id' in entry_data:
-                return [entry_data]
-            return None
-        if not entries:
-            self.logger.error(f'No entries found for {search_string}')
-            return None
-        return entries
 
     def __check_spotify_source(self, playlist_id=None, album_id=None):
         data = []
@@ -462,33 +473,82 @@ class DownloadClient():
             search_strings.append(search_string)
         return search_strings
 
-    def __prepare_data_source(self, source_dict):
+    def __check_youtube_source(self, playlist_id=None):
+        if playlist_id:
+            self.logger.debug(f'Checking youtube playlist id {playlist_id}')
+            response, data = self.youtube_client.playlist_list_items(playlist_id)
+            if response.status_code != 200:
+                self.logger.error(f'Unable to find youtube playlist {response.status_code}, {response.text}')
+                return []
+            return data
+        return []
+
+    async def __check_source_types(self, search, loop):
         '''
-        Prepare source from youtube url
+        Check the source type of the search given
+
+        If spotify type, grab info from spotify api and get proper search terms for youtube
         '''
-        try:
-            data = self.ytdl.extract_info(url=source_dict['webpage_url'], download=True)
-        except DownloadError:
-            self.logger.error(f'Error downloading youtube search "{source_dict["webpage_url"]}')
-            return None
-        self.logger.info(f'Starting download of video "{data["title"]}" from url "{data["webpage_url"]}"')
-        file_path = Path(self.ytdl.prepare_filename(data))
-        # The modified time of download videos can be the time when it was actually uploaded to youtube
-        # Touch here to update the modified time, so that the cleanup check works as intendend
-        file_path.touch(exist_ok=True)
-        # Rename file to a random uuid name, that way we can have diff videos with same/similar names
-        uuid_path = file_path.parent / f'{uuid4()}{".".join(i for i in file_path.suffixes)}'
-        file_path.rename(uuid_path)
-        self.logger.info(f'Downloaded url "{data["webpage_url"]} to file "{uuid_path}"')
-        data['requester'] = source_dict['requester']
-        data['guild_id'] = source_dict['guild_id']
-        data['file_path'] = uuid_path
-        if self.enable_audio_processing:
-            edited_path = edit_audio_file(uuid_path)
-            if edited_path:
-                data['file_path'] = edited_path
-                uuid_path.unlink()
-        return data
+        # If spotify, grab list of search strings, otherwise just grab single search
+        spotify_playlist_matcher = re_match(SPOTIFY_PLAYLIST_REGEX, search)
+        spotify_album_matcher = re_match(SPOTIFY_ALBUM_REGEX, search)
+        playlist_matcher = re_match(YOUTUBE_PLAYLIST_REGEX, search)
+
+        if spotify_playlist_matcher and self.spotify_client:
+            to_run = partial(self.__check_spotify_source, playlist_id=spotify_playlist_matcher.group('playlist_id'))
+            search_strings = await loop.run_in_executor(None, to_run)
+            if spotify_playlist_matcher.group('shuffle'):
+                random.shuffle(search_strings)
+            self.logger.debug(f'Gathered {len(search_strings)} from spotify playlist "{search}"')
+            return search_strings
+
+        if spotify_album_matcher and self.spotify_client:
+            to_run = partial(self.__check_spotify_source, album_id=spotify_album_matcher.group('album_id'))
+            search_strings = await loop.run_in_executor(None, to_run)
+            if spotify_album_matcher.group('shuffle'):
+                random.shuffle(search_strings)
+            self.logger.debug(f'Gathered {len(search_strings)} from spotify playlist "{search}"')
+            return search_strings
+
+        if playlist_matcher and self.youtube_client:
+            to_run = partial(self.__check_youtube_source, playlist_id=playlist_matcher.group('playlist_id'))
+            search_strings = await loop.run_in_executor(None, to_run)
+            if playlist_matcher.group('shuffle'):
+                random.shuffle(search_strings)
+            self.logger.debug(f'Gathered {len(search_strings)} from youtube playlist "{search}"')
+            return search_strings
+        return [search]
+
+    async def check_source(self, ctx, search, loop, download_queue=None):
+        '''
+        Create source from youtube search
+        '''
+        search_strings = await self.__check_source_types(search, loop)
+
+        all_entries = []
+        for search_string in search_strings:
+            entry = {
+                'guild_id': ctx.guild.id,
+                'requester': f'{ctx.author.name}',
+                'search_string': search_string,
+            }
+            if not download_queue:
+                all_entries.append(entry)
+            else:
+                try:
+                    self.logger.debug(f'Handing off entry {entry} to download queue')
+                    download_queue.put_nowait(entry)
+                except asyncio.QueueFull:
+                    # Return here since we probably cant find any more entries
+                    self.logger.warning(f'Queue too full, skipping search "{search_string}"')
+                    await ctx.send('Queue is full, cannot add more songs',
+                                   delete_after=self.delete_after)
+                    return all_entries
+                except PutsBlocked:
+                    self.logger.warning('Puts to queue is currently blocked, assuming shutdown')
+                    return all_entries
+            # Wait 1 second so we dont blast youtube
+        return all_entries
 
 
 class MusicPlayer:
@@ -597,18 +657,20 @@ class MusicPlayer:
         while not self.bot.is_closed():
             source_dict = await self.download_queue.get()
             try:
-                source_download = await self.ytdl.create_source(source_dict, self.bot.loop)
+                source_download = await self.ytdl.create_source(source_dict, self.bot.loop, download=True)
                 self.play_queue.put_nowait(source_download)
                 self.logger.info(f'Adding "{source_download["title"]}" '
                                  f'to queue in guild {source_dict["guild_id"]}')
+            except SongTooLong:
+                await self._channel.send(f'Search "{source_dict["search_string"]}" exceeds maximum of {self.max_song_length} seconds, skipping',
+                                         delete_after=self.delete_after)
+                continue
             except asyncio.QueueFull:
                 await self._channel.send('Queue is full, cannot add more songs',
                                          delete_after=self.delete_after)
-                await asyncio.sleep(1)
                 continue
             except PutsBlocked:
                 self.logger.warning('Puts Blocked on queue, assuming shutdown')
-                await asyncio.sleep(1)
                 continue
             await self.update_queue_strings()
             # Wait 1 second so we dont blast youtube api
@@ -635,7 +697,6 @@ class MusicPlayer:
             return True
         await self.np.edit(content=message)
         return False
-
 
     async def player_loop(self):
         '''
@@ -756,8 +817,13 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.enable_audio_processing = settings.get('music_enable_audio_processing', False)
         spotify_client_id = settings.get('music_spotify_client_id', None)
         spotify_client_secret = settings.get('music_spotify_client_secret', None)
+        youtube_api_key = settings.get('music_youtube_api_key', None)
         if spotify_client_id and spotify_client_secret:
             self.spotify_client = SpotifyClient(spotify_client_id, spotify_client_secret)
+
+        self.youtube_client = None
+        if youtube_api_key:
+            self.youtube_client = YoutubeAPI(youtube_api_key)
 
         if self.download_dir is not None:
             self.download_dir = Path(self.download_dir)
@@ -823,8 +889,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 'source_address': '0.0.0.0',  # ipv6 addresses cause issues sometimes
                 'outtmpl': str(guild_path / '%(extractor)s-%(id)s-%(title)s.%(ext)s'),
             }
+            if self.max_song_length:
+                ytdlopts['match_filter'] = max_song_filter_generator(self.max_song_length)
             ytdl = DownloadClient(YoutubeDL(ytdlopts), self.logger,
-                                  spotify_client=self.spotify_client, delete_after=self.delete_after,
+                                  spotify_client=self.spotify_client, youtube_client=self.youtube_client,
+                                  delete_after=self.delete_after,
                                   enable_audio_processing=self.enable_audio_processing)
             player = MusicPlayer(ctx, self.logger, ytdl, self.max_song_length,
                                  self.queue_max_size, self.delete_after)
@@ -909,7 +978,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                   delete_after=self.delete_after)
 
         await player.ytdl.check_source(ctx, search, self.bot.loop,
-                                       max_song_length=self.max_song_length, download_queue=player.download_queue)
+                                       download_queue=player.download_queue)
 
     @commands.command(name='skip')
     async def skip_(self, ctx):
@@ -1264,15 +1333,17 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not playlist:
             return None
 
-        source_dicts = await player.ytdl.check_source(ctx, search, self.bot.loop)
-        if source_dicts is None:
-            return await ctx.send(f'Unable to find video for search {search}')
-        for data in source_dicts:
-            self.logger.info(f'Adding video_id {data["id"]} to playlist "{playlist.name}" '
+        source_entries = await player.ytdl.check_source(ctx, search, self.bot.loop)
+        for entry in source_entries:
+            source_dict = await player.ytdl.create_source(entry, download=False)
+            if source_dict is None:
+                await ctx.send(f'Unable to find video for search {search}')
+                continue
+            self.logger.info(f'Adding video_id {source_dict["id"]} to playlist "{playlist.name}" '
                             f' in guild {ctx.guild.id}')
-            playlist_item = self.__playlist_add_item(ctx, playlist, data['id'], data['title'], data['uploader'])
+            playlist_item = self.__playlist_add_item(ctx, playlist, source_dict['id'], source_dict['title'], source_dict['uploader'])
             if playlist_item:
-                await ctx.send(f'Added item "{data["title"]}" to playlist {playlist_index}', delete_after=self.delete_after)
+                await ctx.send(f'Added item "{source_dict["title"]}" to playlist {playlist_index}', delete_after=self.delete_after)
                 continue
             await ctx.send('Unable to add playlist item, likely already exists', delete_after=self.delete_after)
 
@@ -1575,7 +1646,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         for item in playlist_items:
             await player.ytdl.check_source(ctx, f'{item.video_id}', self.bot.loop,
-                                         max_song_length=self.max_song_length, download_queue=player.download_queue)
+                                           download_queue=player.download_queue)
         await ctx.send(f'Added all songs in playlist "{playlist.name}" to queue',
                        delete_after=self.delete_after)
         playlist.last_queued = datetime.utcnow()
@@ -1612,14 +1683,16 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return None
 
         for item in self.db_session.query(PlaylistItem).filter(PlaylistItem.playlist_id == playlist.id):
-            source_dicts = await player.ytdl.check_source(ctx, f'{item.video_id}', self.bot.loop)
-            if source_dicts is None:
-                self.logger.info(f'Unable to find source for "{item.title}", removing from database')
-                await ctx.send(f'Unable to find youtube source ' \
-                                f'for "{item.title}", "{item.video_id}", removing item from database',
-                                delete_after=self.delete_after)
-                self.db_session.delete(item)
-                self.db_session.commit()
+            source_entries = await player.ytdl.check_source(ctx, f'{item.video_id}', self.bot.loop)
+            for entry in source_entries:
+                source_dict = await player.ytdl.create_source(entry, download=False)
+                if source_dict is None:
+                    self.logger.info(f'Unable to find source for "{item.title}", removing from database')
+                    await ctx.send(f'Unable to find youtube source ' \
+                                    f'for "{item.title}", "{item.video_id}", removing item from database',
+                                    delete_after=self.delete_after)
+                    self.db_session.delete(item)
+                    self.db_session.commit()
         self.logger.info(f'Finished cleanup for all items in playlist "{playlist.id}"')
         await ctx.send(f'Checked all songs in playlist "{playlist.name}"',
                 delete_after=self.delete_after)
