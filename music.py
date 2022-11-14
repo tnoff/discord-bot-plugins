@@ -658,8 +658,11 @@ class MusicPlayer:
             source_dict = await self.download_queue.get()
             try:
                 source_download = await self.ytdl.create_source(source_dict, self.bot.loop, download=True)
-                self.play_queue.put_nowait(source_download)
-                self.logger.info(f'Adding "{source_download["title"]}" '
+                if source_download is None:
+                    self._channel.send(f'Issue downloading video "{source_dict["search_string"]}", skipping')
+                else:
+                    self.play_queue.put_nowait(source_download)
+                    self.logger.info(f'Adding "{source_download["title"]}" '
                                  f'to queue in guild {source_dict["guild_id"]}')
             except SongTooLong:
                 await self._channel.send(f'Search "{source_dict["search_string"]}" exceeds maximum of {self.max_song_length} seconds, skipping',
