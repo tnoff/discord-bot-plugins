@@ -72,7 +72,15 @@ class RoleAssignment(CogHelper):
         BASE.metadata.create_all(self.db_engine)
         BASE.metadata.bind = self.db_engine
         self.message_expiry_timeout = settings.get('role_assignment_expiry_timeout', MESSAGE_EXPIRY_DEFAULT)
-        self.bot.loop.create_task(self.main_loop())
+
+        self._task = None
+
+    async def cog_load(self):
+        self._task = self.bot.loop.create_task(self.main_loop())
+
+    async def cog_unload(self):
+        if self._task:
+            self._task.cancel()
 
     async def main_loop(self):
         '''

@@ -386,21 +386,23 @@ class SourceFile():
             except KeyError:
                 pass
 
-        # The modified time of download videos can be the time when it was actually uploaded to youtube
-        # Touch here to update the modified time, so that the cleanup check works as intendend
-        # Rename file to a random uuid name, that way we can have diff videos with same/similar names
-        uuid_path = file_path.parent / f'{uuid4()}{".".join(i for i in file_path.suffixes)}'
-        file_path.rename(uuid_path)
-        self.file_path = uuid_path
-        self.logger.info(f'Moved downloaded url "{self._new_dict["webpage_url"]}" to file "{uuid_path}"')
         self._new_dict['requester'] = source_dict['requester']
         self._new_dict['guild_id'] = source_dict['guild_id']
-        self._new_dict['file_path'] = uuid_path
-        if enable_audio_processing:
-            edited_path = self.edit_audio_file()
-            if edited_path:
-                self._new_dict['file_path'] = edited_path
-                uuid_path.unlink()
+
+        if file_path:
+            # The modified time of download videos can be the time when it was actually uploaded to youtube
+            # Touch here to update the modified time, so that the cleanup check works as intendend
+            # Rename file to a random uuid name, that way we can have diff videos with same/similar names
+            uuid_path = file_path.parent / f'{uuid4()}{".".join(i for i in file_path.suffixes)}'
+            file_path.rename(uuid_path)
+            self.file_path = uuid_path
+            self.logger.info(f'Moved downloaded url "{self._new_dict["webpage_url"]}" to file "{uuid_path}"')
+            self._new_dict['file_path'] = uuid_path
+            if enable_audio_processing:
+                edited_path = self.edit_audio_file()
+                if edited_path:
+                    self._new_dict['file_path'] = edited_path
+                    uuid_path.unlink()
 
     def __getitem__(self, key):
         '''
@@ -449,7 +451,7 @@ class SourceFile():
                 break
             end -= 1
         self.logger.info(f'Found start {start} and {end} of audio file {str(self.file_path)}')
-        audio_clip = audio_clip.subclip(t_start=start, t_end=end)
+        audio_clip = audio_clip.subclip(t_start=start, t_end=end + 1)
         # Normalize audio
         edited_audio = audio_clip.fx(afx.audio_normalize) #pylint:disable=no-member
         edited_audio.write_audiofile(str(editing_path))
@@ -493,8 +495,9 @@ class DownloadClient():
         except KeyError:
             pass
 
-        file_path = Path(self.ytdl.prepare_filename(data))
-        self.logger.info(f'Downloaded url "{data["webpage_url"]}" to file "{str(file_path)}"')
+        if download:
+            file_path = Path(self.ytdl.prepare_filename(data))
+            self.logger.info(f'Downloaded url "{data["webpage_url"]}" to file "{str(file_path)}"')
         return SourceFile(file_path, data, source_dict, self.logger, self.enable_audio_processing)
 
     async def create_source(self, source_dict, loop, download=False):
@@ -617,9 +620,9 @@ class MusicPlayer:
         self.history = MyQueue(maxsize=queue_max_size)
         self.next = Event()
 
-        self.np = None  # Now playing message
+        self.np_message = ''
         self.queue_messages = [] # Show current queue
-        self.volume = 1
+        self.volume = 0.5
         self.max_song_length = max_song_length
         self.current_path = None
         self.member_last_seen = None # Last time a member was in the voice channel
@@ -627,8 +630,15 @@ class MusicPlayer:
         # For showing messages
         self.lock_file = Path(NamedTemporaryFile(delete=False).name) #pylint:disable=consider-using-with
 
-        bot.loop.create_task(self.player_loop())
-        bot.loop.create_task(self.download_files())
+        self._player_task = None
+        self._download_task = None
+
+    async def start(self):
+        '''
+        Start background methods
+        '''
+        self._player_task = self.bot.loop.create_task(self.player_loop())
+        self._download_task = self.bot.loop.create_task(self.download_files())
 
     def __exit__(self, *args, **kwargs):
         if self.lock_file.exists():
@@ -654,19 +664,17 @@ class MusicPlayer:
         '''
         self.lock_file.write_text('unlocked')
 
-    async def check_latest_message(self):
+    async def should_delete_messages(self):
         '''
         Check if known queue messages match whats in channel history
         '''
         num_messages = len(self.queue_messages)
-        history = await self.text_channel.history(limit=num_messages + 1).flatten()
-        for (count, hist_item) in enumerate(history[:-1]):
+        history = [message async for message in self.text_channel.history(limit=num_messages)]
+        for (count, hist_item) in enumerate(history):
             mess = self.queue_messages[num_messages - 1 - count]
             if mess.id != hist_item.id:
-                return False
-        if history[-1].id != self.np.id:
-            return False
-        return True
+                return True
+        return False
 
     async def clear_queue_messages(self):
         '''
@@ -682,8 +690,11 @@ class MusicPlayer:
         '''
         Get full queue message
         '''
+        items = []
+        if self.np_message:
+            items.append(self.np_message)
         if not self.play_queue._queue: #pylint:disable=protected-access
-            return None
+            return items
         headers = [
             {
                 'name': 'Pos',
@@ -715,9 +726,11 @@ class MusicPlayer:
                 item['title'],
                 uploader,
             ])
-        return [f'```{t}```' for t in table.print()]
+        for t in table.print():
+            items.append(f'```{t}```')
+        return items
 
-    async def update_queue_strings(self, delete_messages=False):
+    async def update_queue_strings(self):
         '''
         Update queue message in channel
         '''
@@ -726,6 +739,7 @@ class MusicPlayer:
             await self.release_lock()
             return
 
+        delete_messages = await self.should_delete_messages()
         self.logger.debug(f'Updating queue messages in channel {self.text_channel.id} in guild {self.guild.id}')
         new_queue_strings = self.get_queue_message() or []
         if delete_messages:
@@ -787,32 +801,11 @@ class MusicPlayer:
             await retry_discord_message_command(source_dict['message'].delete)
             await sleep(1)
 
-    async def __reset_now_playing_message(self, message):
+    def set_next(self, *_args, **_kwargs):
         '''
-        Return true if queue messages should be deleted and re-sent, false if not
+        Used for loop to call once voice channel done
         '''
-        # Double check np message exists
-        if self.np:
-            try:
-                await retry_discord_message_command(self.text_channel.fetch_message, self.np.id)
-            except NotFound:
-                self.np = None
-
-        last_message_check = None
-        if self.queue_messages:
-            last_message_check = await self.check_latest_message()
-
-        # If not exists, send
-        if self.np is None:
-            self.np = await retry_discord_message_command(self.text_channel.send, message)
-            return True
-        # If message after existing queue, print
-        if not last_message_check:
-            await retry_discord_message_command(self.np.delete)
-            self.np = await retry_discord_message_command(self.text_channel.send, message)
-            return True
-        await retry_discord_message_command(self.np.edit, content=message)
-        return False
+        self.next.set()
 
     async def player_loop(self):
         '''
@@ -852,17 +845,15 @@ class MusicPlayer:
 
             source.volume = self.volume
             try:
-                self.guild.voice_client.play(source, after=lambda _: self.bot.loop.call_soon_threadsafe(self.next.set)) #pylint:disable=line-too-long
+                self.guild.voice_client.play(source, after=self.set_next) #pylint:disable=line-too-long
             except AttributeError:
                 self.logger.info(f'No voice client found, disconnecting from guild {self.guild.name}')
                 return await self.destroy(self.guild)
             self.logger.info(f'Music bot now playing "{source_dict["title"]}" requested '
                              f'by "{source_dict["requester"]}" in guild {self.guild.id}, url '
                              f'"{source_dict["webpage_url"]}"')
-            message = f'Now playing {source_dict["webpage_url"]} requested by {source_dict["requester"]}'
-            delete_messages = await self.__reset_now_playing_message(message)
-
-            await self.update_queue_strings(delete_messages=delete_messages)
+            self.np_message = f'Now playing {source_dict["webpage_url"]} requested by {source_dict["requester"]}'
+            await self.update_queue_strings()
 
             await self.next.wait()
 
@@ -878,11 +869,7 @@ class MusicPlayer:
                 self.history.put_nowait(source_dict)
 
             if self.play_queue.empty() and self.download_queue.empty():
-                try:
-                    await retry_discord_message_command(self.np.delete)
-                except NotFound:
-                    pass
-                self.np = None
+                await self.update_queue_strings()
             self.current_path = None
 
     async def clear_remaining_queue(self):
@@ -921,6 +908,10 @@ class MusicPlayer:
         self.play_queue.clear()
         for message in messages:
             await retry_discord_message_command(message.delete)
+        if self._player_task:
+            self._player_task.cancel()
+        if self._download_task:
+            self._download_task.cancel()
         return history_items
 
     async def destroy(self, guild):
@@ -1025,7 +1016,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         except KeyError:
             pass
 
-    def get_player(self, ctx, voice_channel):
+    async def get_player(self, ctx, voice_channel):
         '''
         Retrieve the guild player, or generate one.
         '''
@@ -1069,6 +1060,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             player = MusicPlayer(ctx.bot, ctx.guild, ctx.cog.cleanup, ctx.channel, voice_channel,
                                  self.logger, ytdl, self.max_song_length,
                                  self.queue_max_size, self.delete_after, history_playlist_id)
+            await player.start()
 
             self.players[ctx.guild.id] = player
 
@@ -1145,7 +1137,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             await ctx.invoke(self.connect_)
             vc = ctx.voice_client
 
-        player = self.get_player(ctx, vc.channel)
+        player = await self.get_player(ctx, vc.channel)
 
         if player.play_queue.full():
             return await retry_discord_message_command(ctx.send, 'Queue is full, cannot add more songs',
@@ -1202,7 +1194,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await retry_discord_message_command(ctx.send, 'I am not currently playing anything',
                                             delete_after=self.delete_after)
 
-        player = self.get_player(ctx, vc.channel)
+        player = await self.get_player(ctx, vc.channel)
         if player.play_queue.empty():
             return await retry_discord_message_command(ctx.send, 'There are currently no more queued songs.',
                                             delete_after=self.delete_after)
@@ -1229,7 +1221,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await retry_discord_message_command(ctx.send, 'I am not currently playing anything',
                                             delete_after=self.delete_after)
 
-        player = self.get_player(ctx, vc.channel)
+        player = await self.get_player(ctx, vc.channel)
         if player.history.empty():
             return await retry_discord_message_command(ctx.send, 'There have been no songs played.',
                                                        delete_after=self.delete_after)
@@ -1276,7 +1268,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await retry_discord_message_command(ctx.send, 'I am not currently playing anything',
                                             delete_after=self.delete_after)
 
-        player = self.get_player(ctx, vc.channel)
+        player = await self.get_player(ctx, vc.channel)
         if player.play_queue.empty():
             return await retry_discord_message_command(ctx.send, 'There are currently no more queued songs.',
                                             delete_after=self.delete_after)
@@ -1302,7 +1294,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await retry_discord_message_command(ctx.send, 'I am not currently connected to voice',
                                             delete_after=self.delete_after)
 
-        player = self.get_player(ctx, vc.channel)
+        player = await self.get_player(ctx, vc.channel)
         if player.play_queue.empty():
             return await retry_discord_message_command(ctx.send, 'There are currently no more queued songs.',
                                             delete_after=self.delete_after)
@@ -1341,7 +1333,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await retry_discord_message_command(ctx.send, 'I am not currently connected to voice',
                                             delete_after=self.delete_after)
 
-        player = self.get_player(ctx, vc.channel)
+        player = await self.get_player(ctx, vc.channel)
         if player.play_queue.empty():
             return await retry_discord_message_command(ctx.send, 'There are currently no more queued songs.',
                                             delete_after=self.delete_after)
@@ -1550,7 +1542,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             await ctx.invoke(self.connect_)
             vc = ctx.voice_client
 
-        player = self.get_player(ctx, vc.channel)
+        player = await self.get_player(ctx, vc.channel)
 
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
@@ -1910,7 +1902,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not vc:
             await ctx.invoke(self.connect_)
             vc = ctx.voice_client
-        player = self.get_player(ctx, vc.channel)
+        player = await self.get_player(ctx, vc.channel)
 
         self.logger.info(f'Playlist queue called for playlist "{playlist.name}" in server "{ctx.guild.id}"')
         query = self.db_session.query(PlaylistItem).\
@@ -1986,7 +1978,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             await ctx.invoke(self.connect_)
             vc = ctx.voice_client
 
-        player = self.get_player(ctx, vc.channel)
+        player = await self.get_player(ctx, vc.channel)
 
         self.logger.info(f'Playlist cleanup called on index "{playlist_index}" in server "{ctx.guild.id}"')
         playlist = await self.__get_playlist(playlist_index, ctx)

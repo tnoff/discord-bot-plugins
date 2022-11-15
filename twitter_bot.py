@@ -60,7 +60,15 @@ class Twitter(CogHelper):
                 raise CogMissingRequiredArg(f'Twitter cog missing required key {key}')
         self.twitter_api = None
         self._restart_client()
-        self.bot.loop.create_task(self.main_loop())
+
+        self._task = None
+
+    async def cog_load(self):
+        self._task = self.bot.loop.create_task(self.main_loop())
+
+    async def cog_unload(self):
+        if self._task:
+            self._task.cancel()
 
     def _restart_client(self):
         self.logger.debug('Reloading twitter client')

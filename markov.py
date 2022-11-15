@@ -99,8 +99,14 @@ class Markov(CogHelper):
             self.settings['markov_history_rention_days'] = MARKOV_HISTORY_RETENTION_DAYS
 
         self.lock_file = Path(NamedTemporaryFile(delete=False).name) #pylint:disable=consider-using-with
+        self._task = None
 
-        self.bot.loop.create_task(self.wait_loop())
+    async def cog_load(self):
+        self._task = self.bot.loop.create_task(self.main_loop())
+
+    async def cog_unload(self):
+        if self._task:
+            self._task.cancel()
 
     def __ensure_word(self, word):
         if len(word) >= MAX_WORD_LENGTH:
@@ -131,13 +137,13 @@ class Markov(CogHelper):
     def _delete_channel_relations(self, channel_id):
         self.db_session.query(MarkovRelation).filter(MarkovRelation.channel_id == channel_id).delete()
 
-    async def wait_loop(self):
+    async def main_loop(self):
         '''
         Our main loop.
         '''
-        await self.retry_command(self.__wait_loop, non_db_exceptions=(HTTPException))
+        await self.retry_command(self.__main_loop, non_db_exceptions=(HTTPException))
 
-    async def __wait_loop(self):
+    async def __main_loop(self):
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
