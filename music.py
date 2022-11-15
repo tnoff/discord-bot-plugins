@@ -1,16 +1,17 @@
-import asyncio
+from asyncio import sleep
+from asyncio import Event, Queue, QueueFull, TimeoutError as asyncio_timeout
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
-import random
+from random import shuffle as random_shuffle
 from re import match as re_match
 from tempfile import NamedTemporaryFile, TemporaryDirectory
-import typing
+from typing import Optional
 from uuid import uuid4
 
 from async_timeout import timeout
 from discord import FFmpegPCMAudio
-from discord.errors import NotFound
+from discord.errors import HTTPException, NotFound
 from discord.ext import commands
 from moviepy.editor import AudioFileClip, afx
 from requests import get as requests_get
@@ -46,7 +47,10 @@ YOUTUBE_BASE_URL =  'https://www.googleapis.com/youtube/v3/playlistItems'
 
 SPOTIFY_PLAYLIST_REGEX = r'^https://open.spotify.com/playlist/(?P<playlist_id>([a-zA-Z0-9]+))(?P<extra_query>(\?[a-zA-Z0-9=&_-]+)?)(?P<shuffle>( *shuffle)?)'
 SPOTIFY_ALBUM_REGEX = r'^https://open.spotify.com/album/(?P<album_id>([a-zA-Z0-9]+))(?P<extra_query>(\?[a-zA-Z0-9=&_-]+)?)(?P<shuffle>( *shuffle)?)'
-YOUTUBE_PLAYLIST_REGEX = '^https://(www.)?youtube.com/playlist\?list=(?P<playlist_id>[a-zA-Z0-9_-]+)(?P<shuffle> *(shuffle)?)'
+YOUTUBE_PLAYLIST_REGEX = r'^https://(www.)?youtube.com/playlist\?list=(?P<playlist_id>[a-zA-Z0-9_-]+)(?P<shuffle> *(shuffle)?)'
+
+# We only care about the following data in the yt-dlp dict
+YT_DLP_KEYS = ['id', 'title', 'webpage_url', 'uploader', 'duration']
 
 #
 # Music Tables
@@ -226,7 +230,7 @@ class YoutubeAPI():
 
 # Music bot setup
 # Music taken from https://gist.github.com/EvieePy/ab667b74e9758433b3eb806c53a19f34
-class MyQueue(asyncio.Queue):
+class MyQueue(Queue):
     '''
     Custom implementation of asyncio Queue
     '''
@@ -254,7 +258,7 @@ class MyQueue(asyncio.Queue):
         '''
         Shuffle queue
         '''
-        random.shuffle(self._queue)
+        random_shuffle(self._queue)
         return True
 
     def clear(self):
@@ -398,6 +402,37 @@ def max_song_filter_generator(max_song_length):
             raise SongTooLong(f'Song exceeds max length of {max_song_length}')
     return max_song_filter
 
+def rm_tree(pth):
+    '''
+    Remove all files in a tree
+    '''
+    # https://stackoverflow.com/questions/50186904/pathlib-recursively-remove-directory
+    for child in pth.glob('*'):
+        if child.is_file():
+            child.unlink()
+        else:
+            rm_tree(child)
+    pth.rmdir()
+
+async def retry_discord_message_command(func, *args, **kwargs):
+    '''
+    Retry discord send message command, catch case of rate limiting
+    '''
+    max_retries = kwargs.pop('max_retries', 3)
+    retry = 0
+    while True:
+        retry += 1
+        try:
+            return await func(*args, **kwargs)
+        except HTTPException as ex:
+            if '429' not in str(ex):
+                raise
+            if retry <= max_retries:
+                sleep_for = 2 ** (retry - 1)
+                sleep(sleep_for)
+                continue
+            raise
+
 class DownloadClient():
     '''
     Download Client using yt-dlp
@@ -427,24 +462,33 @@ class DownloadClient():
             data = data['entries'][0]
         except KeyError:
             pass
+
+        # Get file path first
         file_path = Path(self.ytdl.prepare_filename(data))
-        self.logger.info(f'Downloaded url "{data["webpage_url"]} to file "{file_path}"')
+        # Keep only keys we want, has alot of metadata we dont care about
+        new_dict = {}
+        for key in YT_DLP_KEYS:
+            try:
+                new_dict[key] = data[key]
+            except KeyError:
+                pass
+        self.logger.info(f'Downloaded url "{new_dict["webpage_url"]}" to file "{file_path}"')
         # The modified time of download videos can be the time when it was actually uploaded to youtube
         # Touch here to update the modified time, so that the cleanup check works as intendend
         file_path.touch(exist_ok=True)
         # Rename file to a random uuid name, that way we can have diff videos with same/similar names
         uuid_path = file_path.parent / f'{uuid4()}{".".join(i for i in file_path.suffixes)}'
         file_path.rename(uuid_path)
-        self.logger.info(f'Moved downloaded url "{data["webpage_url"]} to file "{uuid_path}"')
-        data['requester'] = source_dict['requester']
-        data['guild_id'] = source_dict['guild_id']
-        data['file_path'] = uuid_path
+        self.logger.info(f'Moved downloaded url "{new_dict["webpage_url"]}" to file "{uuid_path}"')
+        new_dict['requester'] = source_dict['requester']
+        new_dict['guild_id'] = source_dict['guild_id']
+        new_dict['file_path'] = uuid_path
         if self.enable_audio_processing:
             edited_path = edit_audio_file(uuid_path)
             if edited_path:
-                data['file_path'] = edited_path
+                new_dict['file_path'] = edited_path
                 uuid_path.unlink()
-        return data
+        return new_dict
 
     async def create_source(self, source_dict, loop, download=False):
         '''
@@ -498,7 +542,7 @@ class DownloadClient():
             to_run = partial(self.__check_spotify_source, playlist_id=spotify_playlist_matcher.group('playlist_id'))
             search_strings = await loop.run_in_executor(None, to_run)
             if spotify_playlist_matcher.group('shuffle'):
-                random.shuffle(search_strings)
+                random_shuffle(search_strings)
             self.logger.debug(f'Gathered {len(search_strings)} from spotify playlist "{search}"')
             return search_strings
 
@@ -506,7 +550,7 @@ class DownloadClient():
             to_run = partial(self.__check_spotify_source, album_id=spotify_album_matcher.group('album_id'))
             search_strings = await loop.run_in_executor(None, to_run)
             if spotify_album_matcher.group('shuffle'):
-                random.shuffle(search_strings)
+                random_shuffle(search_strings)
             self.logger.debug(f'Gathered {len(search_strings)} from spotify playlist "{search}"')
             return search_strings
 
@@ -514,12 +558,12 @@ class DownloadClient():
             to_run = partial(self.__check_youtube_source, playlist_id=playlist_matcher.group('playlist_id'))
             search_strings = await loop.run_in_executor(None, to_run)
             if playlist_matcher.group('shuffle'):
-                random.shuffle(search_strings)
+                random_shuffle(search_strings)
             self.logger.debug(f'Gathered {len(search_strings)} from youtube playlist "{search}"')
             return search_strings
         return [search]
 
-    async def check_source(self, ctx, search, loop, download_queue=None):
+    async def check_source(self, search, guild_id, requester_name, loop):
         '''
         Create source from youtube search
         '''
@@ -527,27 +571,11 @@ class DownloadClient():
 
         all_entries = []
         for search_string in search_strings:
-            entry = {
-                'guild_id': ctx.guild.id,
-                'requester': f'{ctx.author.name}',
+            all_entries.append({
+                'guild_id': guild_id,
+                'requester': requester_name,
                 'search_string': search_string,
-            }
-            if not download_queue:
-                all_entries.append(entry)
-            else:
-                try:
-                    self.logger.debug(f'Handing off entry {entry} to download queue')
-                    download_queue.put_nowait(entry)
-                except asyncio.QueueFull:
-                    # Return here since we probably cant find any more entries
-                    self.logger.warning(f'Queue too full, skipping search "{search_string}"')
-                    await ctx.send('Queue is full, cannot add more songs',
-                                   delete_after=self.delete_after)
-                    return all_entries
-                except PutsBlocked:
-                    self.logger.warning('Puts to queue is currently blocked, assuming shutdown')
-                    return all_entries
-            # Wait 1 second so we dont blast youtube
+            })
         return all_entries
 
 
@@ -561,20 +589,20 @@ class MusicPlayer:
     When the bot disconnects from the Voice it's instance will be destroyed.
     '''
 
-    def __init__(self, ctx, logger, ytdl, max_song_length, queue_max_size, delete_after):
-        self.bot = ctx.bot
+    def __init__(self, bot, guild, cog_cleanup, channel, logger, ytdl, max_song_length, queue_max_size, delete_after):
+        self.bot = bot
         self.logger = logger
-        self._guild = ctx.guild
-        self._channel = ctx.channel
-        self._cog = ctx.cog
+        self.guild = guild
+        self.channel = channel
+        self.cog_cleanup = cog_cleanup
         self.ytdl = ytdl
         self.delete_after = delete_after
 
-        self.logger.info(f'Max length for music queue in guild {self._guild} is {queue_max_size}')
+        self.logger.info(f'Max length for music queue in guild {self.guild.name} is {queue_max_size}')
         self.download_queue = MyQueue(maxsize=queue_max_size)
         self.play_queue = MyQueue(maxsize=queue_max_size)
         self.history = MyQueue(maxsize=queue_max_size)
-        self.next = asyncio.Event()
+        self.next = Event()
 
         self.np = None  # Now playing message
         self.queue_messages = [] # Show current queue
@@ -585,8 +613,11 @@ class MusicPlayer:
         # For showing messages
         self.lock_file = Path(NamedTemporaryFile(delete=False).name) #pylint:disable=consider-using-with
 
-        ctx.bot.loop.create_task(self.player_loop())
-        ctx.bot.loop.create_task(self.download_files())
+        bot.loop.create_task(self.player_loop())
+        bot.loop.create_task(self.download_files())
+
+    def __exit__(self, *args, **kwargs):
+        self.lock_file.unlink()
 
     async def acquire_lock(self, wait_timeout=600):
         '''
@@ -597,7 +628,7 @@ class MusicPlayer:
             if (datetime.now() - start).seconds > wait_timeout:
                 raise Exception('Error acquiring player lock lock')
             if self.lock_file.read_text() == 'locked':
-                await asyncio.sleep(.5)
+                await sleep(.5)
                 continue
             break
         self.lock_file.write_text('locked')
@@ -612,7 +643,7 @@ class MusicPlayer:
         '''
         Check if latest message in history is no longer queue message sent
         '''
-        history = await self._channel.history(limit=1).flatten()
+        history = await self.channel.history(limit=1).flatten()
         return history[0].id == last_message_id
 
     async def clear_queue_messages(self):
@@ -621,7 +652,7 @@ class MusicPlayer:
         '''
         await self.acquire_lock()
         for queue_message in self.queue_messages:
-            await queue_message.delete()
+            await retry_discord_message_command(queue_message.delete)
         self.queue_messages = []
         await self.release_lock()
 
@@ -634,18 +665,18 @@ class MusicPlayer:
             await self.release_lock()
             return
 
-        self.logger.debug(f'Updating queue messages in channel {self._channel.id}')
+        self.logger.debug(f'Updating queue messages in channel {self.channel.id} in guild {self.guild.id}')
         new_queue_strings = get_queue_message(self.play_queue) or []
         if delete_messages or len(self.queue_messages) != len(new_queue_strings):
             for queue_message in self.queue_messages:
-                await queue_message.delete()
+                await retry_discord_message_command(queue_message.delete)
             self.queue_messages = []
             for table in new_queue_strings:
-                self.queue_messages.append(await self._channel.send(table))
+                self.queue_messages.append(await retry_discord_message_command(self.channel.send, table))
         else:
             # Can skip first message as its likely just column names
             for (count, queue_message) in enumerate(self.queue_messages):
-                await queue_message.edit(content=new_queue_strings[count])
+                await retry_discord_message_command(queue_message.edit, content=new_queue_strings[count])
         await self.release_lock()
 
     async def download_files(self):
@@ -655,29 +686,37 @@ class MusicPlayer:
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
+            if self.play_queue.shutdown:
+                await sleep(1)
+                continue
             source_dict = await self.download_queue.get()
             try:
                 source_download = await self.ytdl.create_source(source_dict, self.bot.loop, download=True)
-                if source_download is None:
-                    self._channel.send(f'Issue downloading video "{source_dict["search_string"]}", skipping')
-                else:
-                    self.play_queue.put_nowait(source_download)
-                    self.logger.info(f'Adding "{source_download["title"]}" '
-                                 f'to queue in guild {source_dict["guild_id"]}')
             except SongTooLong:
-                await self._channel.send(f'Search "{source_dict["search_string"]}" exceeds maximum of {self.max_song_length} seconds, skipping',
-                                         delete_after=self.delete_after)
+                await retry_discord_message_command(source_dict['message'].edit, content=f'Search "{source_dict["search_string"]}" exceeds maximum of {self.max_song_length} seconds, skipping',
+                                                    delete_after=self.delete_after)
+                await sleep(1)
                 continue
-            except asyncio.QueueFull:
-                await self._channel.send('Queue is full, cannot add more songs',
-                                         delete_after=self.delete_after)
+            if source_download is None:
+                await retry_discord_message_command(source_dict['message'].edit, content=f'Issue downloading video "{source_dict["search_string"]}", skipping',
+                                                    delete_after=self.delete_after)
+                await sleep(1)
+                continue
+            try:
+                self.play_queue.put_nowait(source_download)
+                self.logger.info(f'Adding "{source_download["title"]}" '
+                                 f'to queue in guild {source_dict["guild_id"]}')
+            except QueueFull:
+                await retry_discord_message_command(source_dict['message'].edit, content=f'Queue is full, cannot add "{source_download["title"]}"', delete_after=self.delete_after)
+                await sleep(1)
                 continue
             except PutsBlocked:
-                self.logger.warning('Puts Blocked on queue, assuming shutdown')
+                self.logger.warning(f'Puts Blocked on queue in guild "{source_dict["guild_id"]}", assuming shutdown')
                 continue
             await self.update_queue_strings()
-            # Wait 1 second so we dont blast youtube api
-            await asyncio.sleep(1)
+            # Delete message if nothing went wrong here
+            await retry_discord_message_command(source_dict['message'].delete)
+            await sleep(1)
 
     async def __reset_now_playing_message(self, message):
         last_message_check = None
@@ -686,19 +725,19 @@ class MusicPlayer:
         # Double check np message exists
         if self.np:
             try:
-                await self._channel.fetch_message(self.np.id)
+                await self.channel.fetch_message(self.np.id)
             except NotFound:
                 self.np = None
         # If not exists, send
         if self.np is None:
-            self.np = await self._channel.send(message)
+            self.np = await retry_discord_message_command(self.channel.send, message)
             return True
         # If message after existing queue, print
         if not last_message_check:
-            await self.np.delete()
-            self.np = await self._channel.send(message)
+            await retry_discord_message_command(self.np.delete)
+            self.np = await retry_discord_message_command(self.channel.send, message)
             return True
-        await self.np.edit(content=message)
+        await retry_discord_message_command(self.np.edit, content=message)
         return False
 
     async def player_loop(self):
@@ -714,9 +753,9 @@ class MusicPlayer:
                 # Wait for the next song. If we timeout cancel the player and disconnect...
                 async with timeout(self.max_song_length + 60): # Max song length + 1 min
                     source_dict = await self.play_queue.get()
-            except asyncio.TimeoutError:
-                self.logger.error(f'Music bot reached timeout on queue in guild "{self._guild}"')
-                return await self.destroy(self._guild)
+            except asyncio_timeout:
+                self.logger.error(f'Music bot reached timeout on queue in guild "{self.guild.name}"')
+                return await self.destroy(self.guild)
 
             self.current_path = source_dict['file_path']
             # Check if edited "finished" file exists
@@ -727,24 +766,24 @@ class MusicPlayer:
 
             # Double check file didnt go away
             if not source_dict['file_path'].exists():
-                await self._channel.send(f'Unable to play "{source_dict["title"]}", local file dissapeared')
+                await retry_discord_message_command(self.channel.send, f'Unable to play "{source_dict["title"]}", local file dissapeared')
                 continue
 
             source = FFmpegPCMAudio(str(source_dict['file_path']))
 
             source.volume = self.volume
             try:
-                self._guild.voice_client.play(source, after=lambda _: self.bot.loop.call_soon_threadsafe(self.next.set)) #pylint:disable=line-too-long
+                self.guild.voice_client.play(source, after=lambda _: self.bot.loop.call_soon_threadsafe(self.next.set)) #pylint:disable=line-too-long
             except AttributeError:
-                self.logger.info(f'No voice client found, disconnecting from guild {self._guild}')
-                return await self.destroy(self._guild)
+                self.logger.info(f'No voice client found, disconnecting from guild {self.guild.name}')
+                return await self.destroy(self.guild)
             self.logger.info(f'Music bot now playing "{source_dict["title"]}" requested '
-                             f'by "{source_dict["requester"]}" in guild "{self._guild}", url '
+                             f'by "{source_dict["requester"]}" in guild "{self.guild.name}", url '
                              f'"{source_dict["webpage_url"]}"')
             message = f'Now playing {source_dict["webpage_url"]} requested by {source_dict["requester"]}'
             delete_messages = await self.__reset_now_playing_message(message)
 
-            await asyncio.sleep(1)
+            await sleep(1)
             await self.update_queue_strings(delete_messages=delete_messages)
 
             await self.next.wait()
@@ -756,13 +795,13 @@ class MusicPlayer:
 
             try:
                 self.history.put_nowait(source_dict)
-            except asyncio.QueueFull:
+            except QueueFull:
                 await self.history.get()
                 self.history.put_nowait(source_dict)
 
             if self.play_queue.empty() and self.download_queue.empty():
                 try:
-                    await self.np.delete()
+                    await retry_discord_message_command(self.np.delete)
                 except NotFound:
                     pass
                 self.np = None
@@ -774,32 +813,33 @@ class MusicPlayer:
         # Block puts first on download queue
         self.download_queue.block()
         self.play_queue.block()
-        # Wait about 10 seconds before we start clearing out queue
-        await asyncio.sleep(10)
         while True:
             # Clear download queue
             try:
                # 2 seconds here is kind of random time, but wait if any leftover downloads happening
-                async with timeout(2):
+                async with timeout(30):
                     await self.download_queue.get()
-            except asyncio.TimeoutError:
+            except asyncio_timeout:
                 break
             # Clear player queue
             try:
                # 2 seconds here is kind of random time, but wait if any leftover downloads happening
-                async with timeout(2):
+                async with timeout(30):
                     source_dict = await self.play_queue.get()
                     if source_dict['file_path'].exists():
                         source_dict['file_path'].unlink()
-            except asyncio.TimeoutError:
+            except asyncio_timeout:
                 break
+        self.history.clear()
+        self.download_queue.clear()
+        self.play_queue.clear()
 
     async def destroy(self, guild):
         '''
         Disconnect and cleanup the player.
         '''
-        self.logger.info(f'Removing music bot from guild {self._guild}')
-        self.bot.loop.create_task(self._cog.cleanup(guild))
+        self.logger.info(f'Removing music bot from guild "{self.guild.name}"')
+        await self.cog_cleanup(guild)
 
 
 class Music(CogHelper): #pylint:disable=too-many-public-methods
@@ -835,6 +875,42 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         else:
             self.download_dir = Path(TemporaryDirectory().name) #pylint:disable=consider-using-with
 
+        self.bot.loop.create_task(self.check_old_files())
+
+    def __exit__(self, *args, **kwargs):
+        if self.download_dir:
+            rm_tree(self.download_dir)
+
+    async def __check_database_session(self, ctx):
+        '''
+        Check if database session is in use
+        '''
+        if not self.db_session:
+            await retry_discord_message_command(ctx.send, 'Functionality not available, database is not enabled')
+            return False
+        return True
+
+    async def check_old_files(self):
+        '''
+        Check for any old download directories that should get removed
+        '''
+        await self.bot.wait_until_ready()
+
+        while not self.bot.is_closed():
+            for file_path in self.download_dir.glob('*'):
+                if not file_path.is_dir():
+                    continue
+                # Name must be integer to compare
+                try:
+                    file_path_name = int(file_path.name)
+                except ValueError:
+                    continue
+                try:
+                    self.players[file_path_name]
+                except KeyError:
+                    rm_tree(file_path)
+            await sleep(600)
+
     async def cleanup(self, guild):
         '''
         Cleanup guild player
@@ -851,7 +927,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         try:
             if player.np:
-                await player.np.delete()
+                await retry_discord_message_command(player.np.delete)
         except NotFound:
             pass
         await player.clear_queue_messages()
@@ -861,15 +937,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             del self.players[guild.id]
         except KeyError:
             pass
-
-    async def __check_database_session(self, ctx):
-        '''
-        Check if database session is in use
-        '''
-        if not self.db_session:
-            await ctx.send('Functionality not available, database is not enabled')
-            return False
-        return True
 
     def get_player(self, ctx):
         '''
@@ -898,7 +965,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                   spotify_client=self.spotify_client, youtube_client=self.youtube_client,
                                   delete_after=self.delete_after,
                                   enable_audio_processing=self.enable_audio_processing)
-            player = MusicPlayer(ctx, self.logger, ytdl, self.max_song_length,
+            player = MusicPlayer(ctx.bot, ctx.guild, ctx.cog.cleanup, ctx.channel,
+                                 self.logger, ytdl, self.max_song_length,
                                  self.queue_max_size, self.delete_after)
             self.players[ctx.guild.id] = player
 
@@ -911,16 +979,16 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         try:
             channel = ctx.author.voice.channel
         except AttributeError:
-            await ctx.send(f'"{ctx.author.name}" not in voice chat channel. Please join one and try again',
-                           delete_after=self.delete_after)
+            await retry_discord_message_command(ctx.send, f'"{ctx.author.name}" not in voice chat channel. Please join one and try again',
+                                     delete_after=self.delete_after)
             return None
 
         if not check_voice_chats:
             return channel
 
         if channel.guild.id is not ctx.guild.id:
-            await ctx.send('User not joined to channel bot is in, ignoring command',
-                           delete_after=self.delete_after)
+            await retry_discord_message_command(ctx.send, 'User not joined to channel bot is in, ignoring command',
+                                     delete_after=self.delete_after)
             return False
         return channel
 
@@ -930,7 +998,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         Connect to voice channel.
         '''
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         return await self.retry_command(self.__connect, ctx)
 
     async def __connect(self, ctx):
@@ -944,17 +1012,17 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 self.logger.info(f'Music bot moving to channel {channel.id} '
                                  f'in guild {ctx.guild.id}')
                 await vc.move_to(channel)
-            except asyncio.TimeoutError:
+            except asyncio_timeout:
                 self.logger.error(f'Moving to channel {channel.id} timed out')
-                return await ctx.send(f'Moving to channel: <{channel}> timed out.')
+                return await retry_discord_message_command(ctx.send, f'Moving to channel: <{channel}> timed out.')
         else:
             try:
                 await channel.connect()
-            except asyncio.TimeoutError:
+            except asyncio_timeout:
                 self.logger.error(f'Connecting to channel {channel.id} timed out')
-                return await ctx.send(f'Connecting to channel: <{channel}> timed out.')
+                return await retry_discord_message_command(ctx.send, f'Connecting to channel: <{channel}> timed out.')
 
-        await ctx.send(f'Connected to: {channel}', delete_after=self.delete_after)
+        await retry_discord_message_command(ctx.send, f'Connected to: {channel}', delete_after=self.delete_after)
 
     @commands.command(name='play')
     async def play_(self, ctx, *, search: str):
@@ -966,7 +1034,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             This could be a simple search, an ID or URL.
         '''
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         vc = ctx.voice_client
@@ -977,11 +1045,22 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         player = self.get_player(ctx)
 
         if player.play_queue.full():
-            return await ctx.send('Queue is full, cannot add more songs',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, 'Queue is full, cannot add more songs',
+                                            delete_after=self.delete_after)
 
-        await player.ytdl.check_source(ctx, search, self.bot.loop,
-                                       download_queue=player.download_queue)
+        entries = await player.ytdl.check_source(search, ctx.guild.id, ctx.author.name, self.bot.loop)
+        for entry in entries:
+            try:
+                message = await retry_discord_message_command(ctx.send, f'Downloading and processing "{entry["search_string"]}"')
+                self.logger.debug(f'Handing off entry {entry} to download queue')
+                entry['message'] = message
+                player.download_queue.put_nowait(entry)
+            except PutsBlocked:
+                self.logger.warning(f'Puts to queue in guild {ctx.guild.id} are currently blocked, assuming shutdown')
+                return
+            except QueueFull:
+                await retry_discord_message_command(ctx.send, f'Unable to add "{search}" to queue, queue is full', delete_after=self.delete_after)
+                return
 
     @commands.command(name='skip')
     async def skip_(self, ctx):
@@ -989,20 +1068,20 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         Skip the song.
         '''
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         vc = ctx.voice_client
 
         if not vc or not vc.is_connected():
-            return await ctx.send('I am not currently playing anything',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, 'I am not currently playing anything',
+                                            delete_after=self.delete_after)
 
         if not vc.is_paused() and not vc.is_playing():
             return
         vc.stop()
-        await ctx.send('Skipping song',
-                       delete_after=self.delete_after)
+        await retry_discord_message_command(ctx.send, 'Skipping song',
+                                 delete_after=self.delete_after)
 
     @commands.command(name='clear')
     async def clear(self, ctx):
@@ -1010,22 +1089,22 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         Clear all items from queue
         '''
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         vc = ctx.voice_client
 
         if not vc or not vc.is_connected():
-            return await ctx.send('I am not currently playing anything',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, 'I am not currently playing anything',
+                                            delete_after=self.delete_after)
 
         player = self.get_player(ctx)
         if player.play_queue.empty():
-            return await ctx.send('There are currently no more queued songs.',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, 'There are currently no more queued songs.',
+                                            delete_after=self.delete_after)
         player.play_queue.clear()
-        await ctx.send('Cleared all items from queue',
-                       delete_after=self.delete_after)
+        await retry_discord_message_command(ctx.send, 'Cleared all items from queue',
+                                 delete_after=self.delete_after)
 
         # Reset queue messages
         await player.clear_queue_messages()
@@ -1037,19 +1116,19 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         Show recently played songs
         '''
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         vc = ctx.voice_client
 
         if not vc or not vc.is_connected():
-            return await ctx.send('I am not currently playing anything',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, 'I am not currently playing anything',
+                                            delete_after=self.delete_after)
 
         player = self.get_player(ctx)
         if player.history.empty():
-            return await ctx.send('There have been no songs played.',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, 'There have been no songs played.',
+                                            delete_after=self.delete_after)
 
         items = []
         for item in player.history._queue: #pylint:disable=protected-access
@@ -1063,9 +1142,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         tables = get_table_view(items)
         header = f'```{"Pos":3} || {"Title":48} || {"Uploader":32}```'
-        await ctx.send(header, delete_after=self.delete_after)
+        await retry_discord_message_command(ctx.send, header, delete_after=self.delete_after)
         for table in tables:
-            await ctx.send(table, delete_after=self.delete_after)
+            await retry_discord_message_command(ctx.send, table, delete_after=self.delete_after)
 
     @commands.command(name='shuffle')
     async def shuffle_(self, ctx):
@@ -1073,19 +1152,19 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         Shuffle song queue.
         '''
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         vc = ctx.voice_client
 
         if not vc or not vc.is_connected():
-            return await ctx.send('I am not currently playing anything',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, 'I am not currently playing anything',
+                                            delete_after=self.delete_after)
 
         player = self.get_player(ctx)
         if player.play_queue.empty():
-            return await ctx.send('There are currently no more queued songs.',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, 'There are currently no more queued songs.',
+                                            delete_after=self.delete_after)
         player.play_queue.shuffle()
 
         await player.update_queue_strings()
@@ -1099,32 +1178,32 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             Position in queue of song that will be removed.
         '''
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         vc = ctx.voice_client
 
         if not vc or not vc.is_connected():
-            return await ctx.send('I am not currently connected to voice',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, 'I am not currently connected to voice',
+                                            delete_after=self.delete_after)
 
         player = self.get_player(ctx)
         if player.play_queue.empty():
-            return await ctx.send('There are currently no more queued songs.',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, 'There are currently no more queued songs.',
+                                            delete_after=self.delete_after)
 
         try:
             queue_index = int(queue_index)
         except ValueError:
-            return await ctx.send(f'Invalid queue index {queue_index}',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, f'Invalid queue index {queue_index}',
+                                            delete_after=self.delete_after)
 
         item = player.play_queue.remove_item(queue_index)
         if item is None:
-            return ctx.send(f'Unable to remove queue index {queue_index}',
+            return retry_discord_message_command(ctx.send, f'Unable to remove queue index {queue_index}',
                             delete_after=self.delete_after)
-        await ctx.send(f'Removed item {item["title"]} from queue',
-                       delete_after=self.delete_after)
+        await retry_discord_message_command(ctx.send, f'Removed item {item["title"]} from queue',
+                                 delete_after=self.delete_after)
         remove_file_path(item['file_path'])
         await player.update_queue_strings()
 
@@ -1137,32 +1216,32 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             Position in queue of song that will be removed.
         '''
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         vc = ctx.voice_client
 
         if not vc or not vc.is_connected():
-            return await ctx.send('I am not currently connected to voice',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, 'I am not currently connected to voice',
+                                            delete_after=self.delete_after)
 
         player = self.get_player(ctx)
         if player.play_queue.empty():
-            return await ctx.send('There are currently no more queued songs.',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, 'There are currently no more queued songs.',
+                                            delete_after=self.delete_after)
 
         try:
             queue_index = int(queue_index)
         except ValueError:
-            return await ctx.send(f'Invalid queue index {queue_index}',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, f'Invalid queue index {queue_index}',
+                                            delete_after=self.delete_after)
 
         item = player.play_queue.bump_item(queue_index)
         if item is None:
-            return await ctx.send(f'Unable to bump queue index {queue_index}',
-                            delete_after=self.delete_after)
-        await ctx.send(f'Bumped item {item["title"]} to top of queue',
-                       delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, f'Unable to bump queue index {queue_index}',
+                                            delete_after=self.delete_after)
+        await retry_discord_message_command(ctx.send, f'Bumped item {item["title"]} to top of queue',
+                                 delete_after=self.delete_after)
 
         await player.update_queue_strings()
 
@@ -1172,14 +1251,14 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         Stop the currently playing song and disconnect bot from voice chat.
         '''
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         vc = ctx.voice_client
 
         if not vc or not vc.is_connected():
-            return await ctx.send('I am not currently playing anything',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, 'I am not currently playing anything',
+                                            delete_after=self.delete_after)
 
         await self.cleanup(ctx.guild)
 
@@ -1187,20 +1266,20 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         try:
             index = int(playlist_index)
         except ValueError:
-            await ctx.send(f'Invalid playlist index {playlist_index}', delete_after=self.delete_after)
+            await retry_discord_message_command(ctx.send, f'Invalid playlist index {playlist_index}', delete_after=self.delete_after)
             return None
         playlist_items = self.db_session.query(Playlist).\
             filter(Playlist.server_id == str(ctx.guild.id)).order_by(Playlist.created_at.asc())
         playlist_items = [p for p in playlist_items]
 
         if not playlist_items:
-            await ctx.send('No playlists in database',
-                           delete_after=self.delete_after)
+            await retry_discord_message_command(ctx.send, 'No playlists in database',
+                                     delete_after=self.delete_after)
             return None
         try:
             return playlist_items[index - 1]
         except IndexError:
-            await ctx.send(f'Invalid playlist index {playlist_index}', delete_after=self.delete_after)
+            await retry_discord_message_command(ctx.send, f'Invalid playlist index {playlist_index}', delete_after=self.delete_after)
             return None
 
     @commands.group(name='playlist', invoke_without_command=False)
@@ -1209,15 +1288,15 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         Playlist functions.
         '''
         if ctx.invoked_subcommand is None:
-            await ctx.send('Invalid sub command passed...', delete_after=self.delete_after)
+            await retry_discord_message_command(ctx.send, 'Invalid sub command passed...', delete_after=self.delete_after)
 
     async def __playlist_create(self, ctx, name):
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
-            ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
+            retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
             return None
         playlist = Playlist(name=clean_string(name, max_length=256),
                             server_id=ctx.guild.id,
@@ -1227,11 +1306,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             self.db_session.commit()
         except IntegrityError:
             self.db_session.rollback()
-            await ctx.send(f'Unable to create playlist "{name}", name likely already exists')
+            await retry_discord_message_command(ctx.send, f'Unable to create playlist "{name}", name likely already exists')
             return None
         self.logger.info(f'Playlist created "{playlist.name}" with ID {playlist.id} in guild {ctx.guild.id}')
-        await ctx.send(f'Created playlist "{name}"',
-                              delete_after=self.delete_after)
+        await retry_discord_message_command(ctx.send, f'Created playlist "{name}"',
+                                 delete_after=self.delete_after)
         return playlist
 
     @playlist.command(name='create')
@@ -1253,18 +1332,18 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_list(self, ctx, max_rows=15):
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
+            return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
         playlist_items = self.db_session.query(Playlist).\
             filter(Playlist.server_id == str(ctx.guild.id))
         playlist_items = [p for p in playlist_items]
 
         if not playlist_items:
-            return await ctx.send('No playlists in database',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, 'No playlists in database',
+                                            delete_after=self.delete_after)
         table_strings = []
         current_index = 0
         while True:
@@ -1282,10 +1361,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             current_index += max_rows
             if current_index >= len(playlist_items):
                 break
-        await ctx.send(f'```{"ID":3} || {"Playlist Name":32} || {"Last Queued":17}```',
-                       delete_after=self.delete_after)
+        await retry_discord_message_command(ctx.send, f'```{"ID":3} || {"Playlist Name":32} || {"Last Queued":17}```',
+                                 delete_after=self.delete_after)
         for table in table_strings:
-            await ctx.send(f'{table}', delete_after=self.delete_after)
+            await retry_discord_message_command(ctx.send, f'{table}', delete_after=self.delete_after)
 
     def __playlist_add_item(self, ctx, playlist, data_id, data_title, data_uploader):
         self.logger.info(f'Adding video_id {data_id} to playlist "{playlist.name}" '
@@ -1319,11 +1398,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_item_add(self, ctx, playlist_index, search):
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
+            return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
         vc = ctx.voice_client
 
@@ -1336,19 +1415,19 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not playlist:
             return None
 
-        source_entries = await player.ytdl.check_source(ctx, search, self.bot.loop)
+        source_entries = await player.ytdl.check_source(search, ctx.guild.id, ctx.author.name, self.bot.loop)
         for entry in source_entries:
             source_dict = await player.ytdl.create_source(entry, download=False)
             if source_dict is None:
-                await ctx.send(f'Unable to find video for search {search}')
+                await retry_discord_message_command(ctx.send, f'Unable to find video for search {search}')
                 continue
             self.logger.info(f'Adding video_id {source_dict["id"]} to playlist "{playlist.name}" '
-                            f' in guild {ctx.guild.id}')
+                             f' in guild {ctx.guild.id}')
             playlist_item = self.__playlist_add_item(ctx, playlist, source_dict['id'], source_dict['title'], source_dict['uploader'])
             if playlist_item:
-                await ctx.send(f'Added item "{source_dict["title"]}" to playlist {playlist_index}', delete_after=self.delete_after)
+                await retry_discord_message_command(ctx.send, f'Added item "{source_dict["title"]}" to playlist {playlist_index}', delete_after=self.delete_after)
                 continue
-            await ctx.send('Unable to add playlist item, likely already exists', delete_after=self.delete_after)
+            await retry_discord_message_command(ctx.send, 'Unable to add playlist item, likely already exists', delete_after=self.delete_after)
 
     @playlist.command(name='item-search')
     async def playlist_item_search(self, ctx, playlist_index, *, search: str):
@@ -1364,12 +1443,13 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_item_search(self, ctx, playlist_index, search, max_rows=15):
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command',
+                                            delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions',
-                            delete_after=self.delete_after)
+            return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions',
+                                      delete_after=self.delete_after)
 
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
@@ -1385,8 +1465,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                     'title': item.title,
                 })
         if not items:
-            return await ctx.send(f'No playlist items in matching string "{search}"',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, f'No playlist items in matching string "{search}"',
+                                            delete_after=self.delete_after)
 
         table_strings = []
         current_index = 0
@@ -1403,9 +1483,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 break
 
         header = f'```{"ID":3} || {"Title":48}```'
-        await ctx.send(header, delete_after=self.delete_after)
+        await retry_discord_message_command(ctx.send, header, delete_after=self.delete_after)
         for table in table_strings:
-            await ctx.send(table, delete_after=self.delete_after)
+            await retry_discord_message_command(ctx.send, table, delete_after=self.delete_after)
 
     @playlist.command(name='item-remove')
     async def playlist_item_remove(self, ctx, playlist_index, song_index):
@@ -1421,11 +1501,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_item_remove(self, ctx, playlist_index, song_index):
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
+            return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
@@ -1433,11 +1513,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         try:
             song_index = int(song_index)
         except ValueError:
-            return await ctx.send(f'Invalid item index {song_index}',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, f'Invalid item index {song_index}',
+                                            delete_after=self.delete_after)
         if song_index < 1:
-            return await ctx.send(f'Invalid item index {song_index}',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, f'Invalid item index {song_index}',
+                                            delete_after=self.delete_after)
 
         query = self.db_session.query(PlaylistItem).\
             filter(PlaylistItem.playlist_id == playlist.id)
@@ -1446,11 +1526,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             item = query_results[song_index - 1]
             self.db_session.delete(item)
             self.db_session.commit()
-            return await ctx.send(f'Removed item {song_index} from playlist',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, f'Removed item {song_index} from playlist',
+                                            delete_after=self.delete_after)
         except IndexError:
-            return await ctx.send(f'Unable to find item {song_index}',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, f'Unable to find item {song_index}',
+                                            delete_after=self.delete_after)
 
     @playlist.command(name='show')
     async def playlist_show(self, ctx, playlist_index):
@@ -1464,11 +1544,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_show(self, ctx, playlist_index):
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
+            return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
@@ -1486,14 +1566,14 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 'uploader': uploader,
             })
         if not items:
-            return await ctx.send('No playlist items in database',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, 'No playlist items in database',
+                                            delete_after=self.delete_after)
 
         tables = get_table_view(items)
         header = f'```{"Pos":3} || {"Title":48} || {"Uploader":32}```'
-        await ctx.send(header, delete_after=self.delete_after)
+        await retry_discord_message_command(ctx.send, header, delete_after=self.delete_after)
         for table in tables:
-            await ctx.send(table, delete_after=self.delete_after)
+            await retry_discord_message_command(ctx.send, table, delete_after=self.delete_after)
 
     @playlist.command(name='delete')
     async def playlist_delete(self, ctx, playlist_index):
@@ -1507,11 +1587,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_delete(self, ctx, playlist_index):
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
+            return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
@@ -1521,8 +1601,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             filter(PlaylistItem.playlist_id == playlist.id).delete()
         self.db_session.delete(playlist)
         self.db_session.commit()
-        return await ctx.send(f'Deleted playlist {playlist_index}',
-                              delete_after=self.delete_after)
+        return await retry_discord_message_command(ctx.send, f'Deleted playlist {playlist_index}',
+                                        delete_after=self.delete_after)
 
     @playlist.command(name='rename')
     async def playlist_rename(self, ctx, playlist_index, *, playlist_name: str):
@@ -1538,11 +1618,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_rename(self, ctx, playlist_index, playlist_name):
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
+            return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
@@ -1550,7 +1630,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.logger.info(f'Renaming playlist {playlist.id} to name "{playlist_name}"')
         playlist.name = playlist_name
         self.db_session.commit()
-        return await ctx.send(f'Renamed playlist {playlist_index} to name "{playlist_name}"', delete_after=self.delete_after)
+        return await retry_discord_message_command(ctx.send, f'Renamed playlist {playlist_index} to name "{playlist_name}"', delete_after=self.delete_after)
 
     @playlist.command(name='save-queue')
     async def playlist_queue_save(self, ctx, *, name: str):
@@ -1586,22 +1666,22 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.logger.info(f'Saving queue contents to playlist "{name}", is_history? {is_history}')
 
         if queue.empty():
-            return await ctx.send('There are no songs to add to playlist',
-                                  delete_after=self.delete_after)
+            return await retry_discord_message_command(ctx.send, 'There are no songs to add to playlist',
+                                            delete_after=self.delete_after)
         for data in queue._queue: #pylint:disable=protected-access
             playlist_item = self.__playlist_add_item(ctx, playlist, data['id'], data['title'], data['uploader'])
             if playlist_item:
-                await ctx.send(f'Added item "{data["title"]}" to playlist', delete_after=self.delete_after)
+                await retry_discord_message_command(ctx.send, f'Added item "{data["title"]}" to playlist', delete_after=self.delete_after)
                 continue
-            await ctx.send(f'Unable to add playlist item "{data["title"]}", likely already exists', delete_after=self.delete_after)
-        await ctx.send(f'Finished adding items to playlist "{name}"')
+            await retry_discord_message_command(ctx.send, f'Unable to add playlist item "{data["title"]}", likely already exists', delete_after=self.delete_after)
+        await retry_discord_message_command(ctx.send, f'Finished adding items to playlist "{name}"', delete_after=self.delete_after)
         if is_history:
             player.history.clear()
-            await ctx.send('Cleared history')
+            await retry_discord_message_command(ctx.send, 'Cleared history', delete_after=self.delete_after)
         return
 
     @playlist.command(name='queue')
-    async def playlist_queue(self, ctx, playlist_index, sub_command: typing.Optional[str] = ''): #pylint:disable=too-many-branches
+    async def playlist_queue(self, ctx, playlist_index, sub_command: Optional[str] = ''): #pylint:disable=too-many-branches
         '''
         Add playlist to queue
 
@@ -1614,11 +1694,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_queue(self, ctx, playlist_index, sub_command):
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
+            return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
@@ -1629,7 +1709,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             if sub_command.lower() == 'shuffle':
                 shuffle = True
             else:
-                return await ctx.send(f'Invalid sub command {sub_command}',
+                return await retry_discord_message_command(ctx.send, f'Invalid sub command {sub_command}',
                                       delete_after=self.delete_after)
 
         vc = ctx.voice_client
@@ -1643,15 +1723,32 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         playlist_items = [item for item in query]
 
         if shuffle:
-            await ctx.send('Shuffling playlist items',
-                           delete_after=self.delete_after)
-            random.shuffle(playlist_items)
+            await retry_discord_message_command(ctx.send, 'Shuffling playlist items',
+                                     delete_after=self.delete_after)
+            random_shuffle(playlist_items)
 
+        broke_early = False
         for item in playlist_items:
-            await player.ytdl.check_source(ctx, f'{item.video_id}', self.bot.loop,
-                                           download_queue=player.download_queue)
-        await ctx.send(f'Added all songs in playlist "{playlist.name}" to queue',
-                       delete_after=self.delete_after)
+            message = await retry_discord_message_command(ctx.send, f'Downloading and processing "{item.title}"')
+            try:
+                # Just add directly to download queue here, since we already know the video id
+                player.download_queue.put_nowait({
+                    'search_string': item.video_id,
+                    'guild_id': ctx.guild.id,
+                    'requester': ctx.author.name,
+                    'message': message,
+                })
+            except QueueFull:
+                await retry_discord_message_command(ctx.send, f'Unable to add item "{item.title}" with id "{item.video_id}" to queue, queue is full',
+                                         delete_after=self.delete_after)
+                broke_early = True
+                break
+        if broke_early:
+            await retry_discord_message_command(ctx.send, f'Added as many songs in playlist "{playlist.name}" to queue as possible, but hit limit',
+                                     delete_after=self.delete_after)
+        else:
+            await retry_discord_message_command(ctx.send, f'Added all songs in playlist "{playlist.name}" to queue',
+                                     delete_after=self.delete_after)
         playlist.last_queued = datetime.utcnow()
         self.db_session.commit()
 
@@ -1667,11 +1764,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_cleanup(self, ctx, playlist_index):
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
+            return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
         vc = ctx.voice_client
 
@@ -1686,19 +1783,24 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return None
 
         for item in self.db_session.query(PlaylistItem).filter(PlaylistItem.playlist_id == playlist.id):
-            source_entries = await player.ytdl.check_source(ctx, f'{item.video_id}', self.bot.loop)
-            for entry in source_entries:
-                source_dict = await player.ytdl.create_source(entry, download=False)
-                if source_dict is None:
-                    self.logger.info(f'Unable to find source for "{item.title}", removing from database')
-                    await ctx.send(f'Unable to find youtube source ' \
-                                    f'for "{item.title}", "{item.video_id}", removing item from database',
-                                    delete_after=self.delete_after)
-                    self.db_session.delete(item)
-                    self.db_session.commit()
+            # Check directly against create source here
+            # Since we know the video id already
+            entry = {
+                'search_string': item.video_id,
+                'guild_id': ctx.guild.id,
+                'requester': ctx.author.name,
+            }
+            source_dict = await player.ytdl.create_source(entry, download=False)
+            if source_dict is None:
+                self.logger.info(f'Unable to find source for "{item.title}", removing from database')
+                await retry_discord_message_command(ctx.send, f'Unable to find youtube source ' \
+                                         f'for "{item.title}", "{item.video_id}", removing item from database',
+                                         delete_after=self.delete_after)
+                self.db_session.delete(item)
+                self.db_session.commit()
         self.logger.info(f'Finished cleanup for all items in playlist "{playlist.id}"')
-        await ctx.send(f'Checked all songs in playlist "{playlist.name}"',
-                delete_after=self.delete_after)
+        await retry_discord_message_command(ctx.send, f'Checked all songs in playlist "{playlist.name}"',
+                                 delete_after=self.delete_after)
 
     @playlist.command(name='merge')
     async def playlist_merge(self, ctx, playlist_index_one, playlist_index_two):
@@ -1714,25 +1816,25 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     async def __playlist_merge(self, ctx, playlist_index_one, playlist_index_two):
         if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
-            return ctx.send('Database not set, cannot use playlist functions', delete_after=self.delete_after)
+            return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
         self.logger.info(f'Calling playlist merge of "{playlist_index_one}" and "{playlist_index_two}" in server "{ctx.guild.id}"')
         playlist_one = await self.__get_playlist(playlist_index_one, ctx)
         playlist_two = await self.__get_playlist(playlist_index_two, ctx)
         if not playlist_one:
-            return ctx.send(f'Cannot find playlist {playlist_index_one}', delete_after=self.delete_after)
+            return retry_discord_message_command(ctx.send, f'Cannot find playlist {playlist_index_one}', delete_after=self.delete_after)
         if not playlist_two:
-            return ctx.send(f'Cannot find playlist {playlist_index_two}', delete_after=self.delete_after)
+            return retry_discord_message_command(ctx.send, f'Cannot find playlist {playlist_index_two}', delete_after=self.delete_after)
         query = self.db_session.query(PlaylistItem).\
             filter(PlaylistItem.playlist_id == playlist_two.id)
         for item in query:
             playlist_item = self.__playlist_add_item(ctx, playlist_one, item.video_id, item.title, item.uploader)
             if playlist_item:
-                await ctx.send(f'Added item "{item.title}" to playlist {playlist_index_one}', delete_after=self.delete_after)
+                await retry_discord_message_command(ctx.send, f'Added item "{item.title}" to playlist {playlist_index_one}', delete_after=self.delete_after)
                 continue
-            await ctx.send(f'Unable to add playlist item "{item.title}", likely already exists', delete_after=self.delete_after)
+            await retry_discord_message_command(ctx.send, f'Unable to add playlist item "{item.title}", likely already exists', delete_after=self.delete_after)
         await self.__playlist_delete(ctx, playlist_index_two)
