@@ -861,6 +861,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         spotify_client_id = settings.get('music_spotify_client_id', None)
         spotify_client_secret = settings.get('music_spotify_client_secret', None)
         youtube_api_key = settings.get('music_youtube_api_key', None)
+        self.spotify_client = None
         if spotify_client_id and spotify_client_secret:
             self.spotify_client = SpotifyClient(spotify_client_id, spotify_client_secret)
 
@@ -1417,7 +1418,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         source_entries = await player.ytdl.check_source(search, ctx.guild.id, ctx.author.name, self.bot.loop)
         for entry in source_entries:
-            source_dict = await player.ytdl.create_source(entry, download=False)
+            source_dict = await player.ytdl.create_source(entry, self.bot.loop, download=False)
             if source_dict is None:
                 await retry_discord_message_command(ctx.send, f'Unable to find video for search {search}')
                 continue
@@ -1790,7 +1791,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 'guild_id': ctx.guild.id,
                 'requester': ctx.author.name,
             }
-            source_dict = await player.ytdl.create_source(entry, download=False)
+            source_dict = await player.ytdl.create_source(entry, self.bot.loop, download=False)
             if source_dict is None:
                 self.logger.info(f'Unable to find source for "{item.title}", removing from database')
                 await retry_discord_message_command(ctx.send, f'Unable to find youtube source ' \
