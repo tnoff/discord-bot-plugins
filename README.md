@@ -80,13 +80,30 @@ Type !help command for more info on a command.
 You can also type !help category for more info on a category.
 ```
 
+### Config Section
+
+You'll need the proper twitter api keys for the bot to use this functionality.
+
+```
+twitter:
+  consumer_key: secret-consumer-key
+  consumer_secret: secret-consumer-secret
+  access_token_key: secret-access-token-key
+  access_token_secret: secret-access-token-secret
+```
+
 ## Music
 
-Play music in voice chat from youtube. Songs can be searched via string or a full url can be passed in as well.
+Play music/videos from youtube in voice chat.
 
-Playlists can be created to save songs to be played.
+Input can be:
+- String that will be searched in youtube
+- A direct youtube url
+- A spotify album or playlist, but spotify credentials must be given
+- A youtube playlist, but google api credentials must be given
 
-Spotify playlists can be passed into the `!play` function, which will query Spotify API for track metadata and search for those tracks on youtube.
+Songs will be placed into a queue to be played, and queued songs can be "bumped" to top of the queue.
+Playlists can be saved to the database for users to queue.
 
 ### Commands
 
@@ -130,4 +147,30 @@ Commands:
 
 Type !help command for more info on a command.
 You can also type !help category for more info on a category.
+```
+
+### Config Section
+
+General args that can be used.
+
+Max Song Length: maximum length of a song that can be added to queue, in seconds
+Download Dir: Directory where audio files with be downloaded
+Queue Max Size: Maximum length of the queue
+Enable Audio Processing: Run normalize audio function via moviepy
+
+```
+music:
+  queue_max_size: 256
+  max_song_length: 3600
+  download_dir: /tmp/discord
+  enable_audio_processing: true
+```
+
+Optional args that can enable spotify and/or youtube playlists.
+
+```
+music:
+  spotify_client_id: secret-spotify-client
+  spotify_client_secret: secret-spotify-client-secret
+  youtube_api_key: secret-youtube-api-key
 ```
