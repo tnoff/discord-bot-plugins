@@ -1,5 +1,5 @@
 from asyncio import sleep
-from asyncio import Event, Queue, QueueFull, TimeoutError as asyncio_timeout
+from asyncio import Event, Queue, QueueEmpty, QueueFull, TimeoutError as asyncio_timeout
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -719,13 +719,16 @@ class MusicPlayer:
             await sleep(1)
 
     async def __reset_now_playing_message(self, message):
+        '''
+        Return true if queue messages should be deleted and re-sent, false if not
+        '''
         last_message_check = None
         if self.queue_messages:
-            last_message_check = await self.check_latest_message(self.queue_messages[-1])
+            last_message_check = await self.check_latest_message(self.queue_messages[-1].id)
         # Double check np message exists
         if self.np:
             try:
-                await self.channel.fetch_message(self.np.id)
+                await retry_discord_message_command(self.channel.fetch_message, self.np.id)
             except NotFound:
                 self.np = None
         # If not exists, send
@@ -813,26 +816,29 @@ class MusicPlayer:
         # Block puts first on download queue
         self.download_queue.block()
         self.play_queue.block()
+        # Wait a second to ensure we have the block set
+        await sleep(1)
+        messages = []
+        # Delete any messages from download queue
+        # Delete any files in play queue that are already added
         while True:
-            # Clear download queue
             try:
-               # 2 seconds here is kind of random time, but wait if any leftover downloads happening
-                async with timeout(30):
-                    await self.download_queue.get()
-            except asyncio_timeout:
+                source_dict = self.download_queue.get_nowait()
+                messages.append(source_dict['message'])
+            except QueueEmpty:
                 break
-            # Clear player queue
+        while True:
             try:
-               # 2 seconds here is kind of random time, but wait if any leftover downloads happening
-                async with timeout(30):
-                    source_dict = await self.play_queue.get()
-                    if source_dict['file_path'].exists():
-                        source_dict['file_path'].unlink()
-            except asyncio_timeout:
+                source_dict = self.play_queue.get_nowait()
+                if source_dict['file_path'].exists():
+                    source_dict['file_path'].unlink()
+            except QueueEmpty:
                 break
         self.history.clear()
         self.download_queue.clear()
         self.play_queue.clear()
+        for message in messages:
+            await retry_discord_message_command(message.delete)
 
     async def destroy(self, guild):
         '''
@@ -876,8 +882,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         else:
             self.download_dir = Path(TemporaryDirectory().name) #pylint:disable=consider-using-with
 
-        self.bot.loop.create_task(self.check_old_files())
-
     def __exit__(self, *args, **kwargs):
         if self.download_dir:
             rm_tree(self.download_dir)
@@ -890,27 +894,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             await retry_discord_message_command(ctx.send, 'Functionality not available, database is not enabled')
             return False
         return True
-
-    async def check_old_files(self):
-        '''
-        Check for any old download directories that should get removed
-        '''
-        await self.bot.wait_until_ready()
-
-        while not self.bot.is_closed():
-            for file_path in self.download_dir.glob('*'):
-                if not file_path.is_dir():
-                    continue
-                # Name must be integer to compare
-                try:
-                    file_path_name = int(file_path.name)
-                except ValueError:
-                    continue
-                try:
-                    self.players[file_path_name]
-                except KeyError:
-                    rm_tree(file_path)
-            await sleep(600)
 
     async def cleanup(self, guild):
         '''
