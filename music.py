@@ -766,11 +766,6 @@ class MusicPlayer:
                 return await self.destroy(self.guild)
 
             self.current_path = source_dict['file_path']
-            # Check if edited "finished" file exists
-            finished_path = get_finished_path(source_dict['file_path'])
-            if finished_path.exists():
-                source_dict['file_path'].unlink()
-                source_dict['file_path'] = finished_path
 
             # Double check file didnt go away
             if not source_dict['file_path'].exists():
@@ -813,6 +808,7 @@ class MusicPlayer:
                 except NotFound:
                     pass
                 self.np = None
+            self.current_path = None
 
     async def clear_remaining_queue(self):
         '''
@@ -919,6 +915,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 await retry_discord_message_command(player.np.delete)
         except NotFound:
             pass
+        if player.current_path and player.current_path.exists():
+            player.current_path.unlink()
         await player.clear_queue_messages()
         await player.clear_remaining_queue()
         # See if we need to delete
