@@ -708,10 +708,15 @@ class MusicPlayer:
                                  f'to queue in guild {source_dict["guild_id"]}')
             except QueueFull:
                 await retry_discord_message_command(source_dict['message'].edit, content=f'Queue is full, cannot add "{source_download["title"]}"', delete_after=self.delete_after)
+                if source_dict['file_path'].exists():
+                    source_dict['file_path'].unlink()
                 await sleep(1)
                 continue
             except PutsBlocked:
                 self.logger.warning(f'Puts Blocked on queue in guild "{source_dict["guild_id"]}", assuming shutdown')
+                await retry_discord_message_command(source_dict['message'].delete)
+                if source_dict['file_path'].exists():
+                    source_dict['file_path'].unlink()
                 continue
             await self.update_queue_strings()
             # Delete message if nothing went wrong here
@@ -1041,6 +1046,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 player.download_queue.put_nowait(entry)
             except PutsBlocked:
                 self.logger.warning(f'Puts to queue in guild {ctx.guild.id} are currently blocked, assuming shutdown')
+                await retry_discord_message_command(message.delete)
                 return
             except QueueFull:
                 await retry_discord_message_command(ctx.send, f'Unable to add "{search}" to queue, queue is full', delete_after=self.delete_after)
