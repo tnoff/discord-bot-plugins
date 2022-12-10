@@ -460,6 +460,9 @@ class DownloadClient():
         # Since we don't pass "url" directly anymore
         try:
             data = data['entries'][0]
+        except IndexError:
+            self.logger.error(f'Error downloading youtube search "{source_dict["search_string"]}')
+            return None
         except KeyError:
             pass
 
