@@ -10,6 +10,7 @@ from typing import Optional
 from uuid import uuid4
 
 from async_timeout import timeout
+from dappertable import shorten_string_cjk, DapperTable
 from discord import FFmpegPCMAudio
 from discord.errors import HTTPException, NotFound
 from discord.ext import commands
@@ -292,64 +293,43 @@ class MyQueue(Queue):
         return item
 
 
-def clean_string(stringy, max_length=MAX_STRING_LENGTH):
-    '''
-    Make sure string is not longer than max string
-    '''
-    if len(stringy) > max_length:
-        stringy = f'{stringy[0:max_length-3]}...'
-    return stringy
-
-def get_table_view(items, max_rows=15, show_queue_time=False):
-    '''
-    Common function for queue printing
-    max_rows    :   Only show max rows in a single print
-    show_queue_time : Show time until item is played
-    '''
-    current_index = 0
-    table_strings = []
-
-    duration = 0
-    # Assume first column is short index name
-    # Second column is longer title name
-    while True:
-        table = ''
-        for (count, item) in enumerate(items[current_index:]):
-            uploader = item['uploader'].replace(' - Topic', '')
-            table = f'{table}\n{count + current_index + 1:3} ||'
-            if show_queue_time:
-                delta = timedelta(seconds=duration)
-                table = f'{table} {str(delta):10} ||'
-                duration += item['duration']
-            table = f'{table} {item["title"]:48} || {uploader:32}'
-            if count >= max_rows - 1:
-                break
-        table_strings.append(f'```\n{table}\n```')
-        current_index += max_rows
-        if current_index >= len(items):
-            break
-    return table_strings
-
 def get_queue_message(queue):
     '''
     Get full queue message
     '''
-    items = []
     if not queue._queue: #pylint:disable=protected-access
         return None
-    for item in queue._queue: #pylint:disable=protected-access
-        uploader = ''
-        if item['uploader'] is not None:
-            uploader = clean_string(item['uploader'], max_length=32)
-        items.append({
-            'title': clean_string(item['title'], max_length=48),
-            'uploader': uploader,
-            'duration': item['duration'],
-        })
-
-    table_strings = get_table_view(items, show_queue_time=True)
-    header = f'```{"Pos":3} || {"Queue Time":10} || {"Title":48} || {"Uploader":32}```'
-    return [header] + table_strings
+    headers = [
+        {
+            'name': 'Pos',
+            'length': 3,
+        },
+        {
+            'name': 'Wait Time',
+            'length': 9,
+        },
+        {
+            'name': 'Title',
+            'length': 48,
+        },
+        {
+            'name': 'Uploader',
+            'length': 32,
+        },
+    ]
+    table = DapperTable(headers, rows_per_message=15)
+    duration = 0
+    for (count, item) in enumerate(queue._queue): #pylint:disable=protected-access
+        uploader = item['uploader'] or ''
+        delta = timedelta(seconds=duration)
+        duration += item['duration']
+        table.add_row([
+            f'{count + 1}',
+            f'{str(delta)}',
+            item['title'],
+            uploader,
+        ])
+    return [f'```{t}```' for t in table.print()]
 
 def get_finished_path(file_path):
     '''
@@ -1121,21 +1101,31 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await retry_discord_message_command(ctx.send, 'There have been no songs played.',
                                             delete_after=self.delete_after)
 
-        items = []
-        for item in player.history._queue: #pylint:disable=protected-access
-            uploader = ''
-            if item['uploader'] is not None:
-                uploader = clean_string(item['uploader'], max_length=32)
-            items.append({
-                'title': clean_string(item['title']),
-                'uploader': clean_string(uploader),
-            })
-
-        tables = get_table_view(items)
-        header = f'```{"Pos":3} || {"Title":48} || {"Uploader":32}```'
-        await retry_discord_message_command(ctx.send, header, delete_after=self.delete_after)
-        for table in tables:
-            await retry_discord_message_command(ctx.send, table, delete_after=self.delete_after)
+        headers = [
+            {
+                'name': 'Pos',
+                'length': 3,
+            },
+            {
+                'name': 'Title',
+                'length': 48,
+            },
+            {
+                'name': 'Uploader',
+                'length': 32,
+            },
+        ]
+        table = DapperTable(headers, rows_per_message=15)
+        for (count, item) in enumerate(player.history._queue): #pylint:disable=protected-access
+            uploader = item['uploader'] or ''
+            table.add_row([
+                f'{count + 1}',
+                item['title'],
+                uploader,
+            ])
+        messages = [f'```{t}```' for t in table.print()]
+        for mess in messages:
+            await retry_discord_message_command(ctx.send, mess, delete_after=self.delete_after)
 
     @commands.command(name='shuffle')
     async def shuffle_(self, ctx):
@@ -1289,7 +1279,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not await self.__check_database_session(ctx):
             retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
             return None
-        playlist = Playlist(name=clean_string(name, max_length=256),
+        playlist = Playlist(name=shorten_string_cjk(name, 256),
                             server_id=ctx.guild.id,
                             created_at=datetime.utcnow())
         try:
@@ -1321,7 +1311,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         '''
         return await self.retry_command(self.__playlist_list, ctx)
 
-    async def __playlist_list(self, ctx, max_rows=15):
+    async def __playlist_list(self, ctx):
         if not await self.check_user_role(ctx):
             return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
@@ -1335,34 +1325,41 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not playlist_items:
             return await retry_discord_message_command(ctx.send, 'No playlists in database',
                                             delete_after=self.delete_after)
-        table_strings = []
-        current_index = 0
-        while True:
-            table = ''
-            for (count, item) in enumerate(playlist_items[current_index:]):
-                last_queued = 'N/A'
-                if item.last_queued:
-                    last_queued = item.last_queued.strftime('%Y-%m-%d %H:%M:%S')
-                table = f'{table}\n{count + current_index + 1:3} ||'
-                table = f'{table} {clean_string(item.name, max_length=32):32} ||'
-                table = f'{table} {last_queued:17}'
-                if count >= max_rows - 1:
-                    break
-            table_strings.append(f'```\n{table}\n```')
-            current_index += max_rows
-            if current_index >= len(playlist_items):
-                break
-        await retry_discord_message_command(ctx.send, f'```{"ID":3} || {"Playlist Name":32} || {"Last Queued":17}```',
-                                 delete_after=self.delete_after)
-        for table in table_strings:
-            await retry_discord_message_command(ctx.send, f'{table}', delete_after=self.delete_after)
+
+        headers = [
+            {
+                'name': 'ID',
+                'length': 3,
+            },
+            {
+                'name': 'Playlist Name',
+                'length': 32,
+            },
+            {
+                'name': 'Last Queued',
+                'length': 17,
+            }
+        ]
+        table = DapperTable(headers, rows_per_message=15)
+        for (count, item) in enumerate(playlist_items):
+            last_queued = 'N/A'
+            if item.last_queued:
+                last_queued = item.last_queued.strftime('%Y-%m-%d %H:%M:%S')
+            table.add_row([
+                f'{count + 1}',
+                item.name,
+                last_queued,
+            ])
+        messages = [f'```{t}```' for t in table.print()]
+        for mess in messages:
+            await retry_discord_message_command(ctx.send, mess, delete_after=self.delete_after)
 
     def __playlist_add_item(self, ctx, playlist, data_id, data_title, data_uploader):
         self.logger.info(f'Adding video_id {data_id} to playlist "{playlist.name}" '
                          f' in guild {ctx.guild.id}')
-        playlist_item = PlaylistItem(title=clean_string(data_title, max_length=256),
+        playlist_item = PlaylistItem(title=shorten_string_cjk(data_title, 256),
                                      video_id=data_id,
-                                     uploader=clean_string(data_uploader, max_length=256),
+                                     uploader=shorten_string_cjk(data_uploader, 256),
                                      playlist_id=playlist.id)
         try:
             self.db_session.add(playlist_item)
@@ -1432,7 +1429,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         '''
         return await self.retry_command(self.__playlist_item_search, ctx, playlist_index, search)
 
-    async def __playlist_item_search(self, ctx, playlist_index, search, max_rows=15):
+    async def __playlist_item_search(self, ctx, playlist_index, search):
         if not await self.check_user_role(ctx):
             return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command',
                                             delete_after=self.delete_after)
@@ -1459,24 +1456,25 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await retry_discord_message_command(ctx.send, f'No playlist items in matching string "{search}"',
                                             delete_after=self.delete_after)
 
-        table_strings = []
-        current_index = 0
-        while True:
-            table = ''
-            for (count, item) in enumerate(items[current_index:]):
-                table = f'{table}\n{item["count"]:3} ||'
-                table = f'{table} {clean_string(item["title"], max_length=48):32}'
-                if count >= max_rows - 1:
-                    break
-            table_strings.append(f'```\n{table}\n```')
-            current_index += max_rows
-            if current_index >= len(items):
-                break
-
-        header = f'```{"ID":3} || {"Title":48}```'
-        await retry_discord_message_command(ctx.send, header, delete_after=self.delete_after)
-        for table in table_strings:
-            await retry_discord_message_command(ctx.send, table, delete_after=self.delete_after)
+        headers = [
+            {
+                'name': 'ID',
+                'length': 3,
+            },
+            {
+                'name': 'Title',
+                'length': 48,
+            },
+        ]
+        table = DapperTable(headers, rows_per_message=15)
+        for (count, item) in enumerate(items):
+            table.add_row([
+                f'{count + 1}',
+                item['title'],
+            ])
+        messages = [f'```{t}```' for t in table.print()]
+        for mess in messages:
+            await retry_discord_message_command(ctx.send, mess, delete_after=self.delete_after)
 
     @playlist.command(name='item-remove')
     async def playlist_item_remove(self, ctx, playlist_index, song_index):
@@ -1547,24 +1545,31 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         query = self.db_session.query(PlaylistItem).\
             filter(PlaylistItem.playlist_id == playlist.id)
-        items = []
-        for item in query:
-            uploader = ''
-            if item.uploader is not None:
-                uploader = clean_string(item.uploader, max_length=32)
-            items.append({
-                'title': clean_string(item.title, max_length=48),
-                'uploader': uploader,
-            })
-        if not items:
-            return await retry_discord_message_command(ctx.send, 'No playlist items in database',
-                                            delete_after=self.delete_after)
-
-        tables = get_table_view(items)
-        header = f'```{"Pos":3} || {"Title":48} || {"Uploader":32}```'
-        await retry_discord_message_command(ctx.send, header, delete_after=self.delete_after)
-        for table in tables:
-            await retry_discord_message_command(ctx.send, table, delete_after=self.delete_after)
+        headers = [
+            {
+                'name': 'Pos',
+                'length': 3,
+            },
+            {
+                'name': 'Title',
+                'length': 48,
+            },
+            {
+                'name': 'Uploader',
+                'length': 32,
+            },
+        ]
+        table = DapperTable(headers, rows_per_message=15)
+        for (count, item) in enumerate(query): #pylint:disable=protected-access
+            uploader = item.uploader or ''
+            table.add_row([
+                f'{count + 1}',
+                item.title,
+                uploader,
+            ])
+        messages = [f'```{t}```' for t in table.print()]
+        for mess in messages:
+            await retry_discord_message_command(ctx.send, mess, delete_after=self.delete_after)
 
     @playlist.command(name='delete')
     async def playlist_delete(self, ctx, playlist_index):
