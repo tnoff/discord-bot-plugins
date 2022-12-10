@@ -102,6 +102,10 @@ class SongTooLong(Exception):
     Max length of song duration exceeded
     '''
 
+class PlaylistMaxLength(Exception):
+    '''
+    Playlist hit max length
+    '''
 #
 # Spotify Client
 #
@@ -1255,7 +1259,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         if not playlist_items:
             await retry_discord_message_command(ctx.send, 'No playlists in database',
-                                     delete_after=self.delete_after)
+                                                delete_after=self.delete_after)
             return None
         try:
             return playlist_items[index - 1]
@@ -1357,6 +1361,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
     def __playlist_add_item(self, ctx, playlist, data_id, data_title, data_uploader):
         self.logger.info(f'Adding video_id {data_id} to playlist "{playlist.name}" '
                          f' in guild {ctx.guild.id}')
+        item_count = self.db_session.query(PlaylistItem).filter(PlaylistItem.playlist_id == playlist.id).count()
+        if item_count >= self.queue_max_size:
+            raise PlaylistMaxLength(f'Playlist {playlist.id} hit max length')
+
         playlist_item = PlaylistItem(title=shorten_string_cjk(data_title, 256),
                                      video_id=data_id,
                                      uploader=shorten_string_cjk(data_uploader, 256),
@@ -1411,7 +1419,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 continue
             self.logger.info(f'Adding video_id {source_dict["id"]} to playlist "{playlist.name}" '
                              f' in guild {ctx.guild.id}')
-            playlist_item = self.__playlist_add_item(ctx, playlist, source_dict['id'], source_dict['title'], source_dict['uploader'])
+            try:
+                playlist_item = self.__playlist_add_item(ctx, playlist, source_dict['id'], source_dict['title'], source_dict['uploader'])
+            except PlaylistMaxLength:
+                retry_discord_message_command(ctx.send, f'Cannot add more items to playlist "{playlist.name}", already max size', delete_after=self.delete_after)
+                return
             if playlist_item:
                 await retry_discord_message_command(ctx.send, f'Added item "{source_dict["title"]}" to playlist {playlist_index}', delete_after=self.delete_after)
                 continue
@@ -1665,7 +1677,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await retry_discord_message_command(ctx.send, 'There are no songs to add to playlist',
                                             delete_after=self.delete_after)
         for data in queue._queue: #pylint:disable=protected-access
-            playlist_item = self.__playlist_add_item(ctx, playlist, data['id'], data['title'], data['uploader'])
+            try:
+                playlist_item = self.__playlist_add_item(ctx, playlist, data['id'], data['title'], data['uploader'])
+            except PlaylistMaxLength:
+                retry_discord_message_command(ctx.send, f'Cannot add more items to playlist "{playlist.name}", already max size', delete_after=self.delete_after)
+                break
             if playlist_item:
                 await retry_discord_message_command(ctx.send, f'Added item "{data["title"]}" to playlist', delete_after=self.delete_after)
                 continue
@@ -1825,10 +1841,13 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return retry_discord_message_command(ctx.send, f'Cannot find playlist {playlist_index_one}', delete_after=self.delete_after)
         if not playlist_two:
             return retry_discord_message_command(ctx.send, f'Cannot find playlist {playlist_index_two}', delete_after=self.delete_after)
-        query = self.db_session.query(PlaylistItem).\
-            filter(PlaylistItem.playlist_id == playlist_two.id)
+        query = self.db_session.query(PlaylistItem).filter(PlaylistItem.playlist_id == playlist_two.id)
         for item in query:
-            playlist_item = self.__playlist_add_item(ctx, playlist_one, item.video_id, item.title, item.uploader)
+            try:
+                playlist_item = self.__playlist_add_item(ctx, playlist_one, item.video_id, item.title, item.uploader)
+            except PlaylistMaxLength:
+                retry_discord_message_command(ctx.send, f'Cannot add more items to playlist "{playlist_one.name}", already max size', delete_after=self.delete_after)
+                return
             if playlist_item:
                 await retry_discord_message_command(ctx.send, f'Added item "{item.title}" to playlist {playlist_index_one}', delete_after=self.delete_after)
                 continue

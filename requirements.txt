@@ -1,4 +1,4 @@
 python-twitter>=3.5
 yt-dlp>=2021.10.10
 moviepy>=2.0.0.dev2
--e git+https://github.com/tnoff/dappertable.git@v0.0.1
+-e git+https://github.com/tnoff/dappertable.git@v0.0.1#egg=dappertable
