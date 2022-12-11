@@ -971,7 +971,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                     history_playlist = Playlist(name=f'__playhistory__{ctx.guild.id}',
                                                 server_id=ctx.guild.id,
                                                 created_at=datetime.utcnow(),
-                                                is_history=False)
+                                                is_history=True)
+                    self.db_session.add(history_playlist)
+                    self.db_session.commit()
                 history_playlist_id = history_playlist.id
             player = MusicPlayer(ctx.bot, ctx.guild, ctx.cog.cleanup, ctx.channel,
                                  self.logger, ytdl, self.max_song_length,
@@ -1290,7 +1292,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return None
         playlist_items = self.db_session.query(Playlist).\
             filter(Playlist.server_id == str(ctx.guild.id)).order_by(Playlist.created_at.asc())
-        playlist_items = [p for p in playlist_items]
+        playlist_items = [p for p in playlist_items if '__playhistory__' not in p.name]
 
         if not playlist_items:
             await retry_discord_message_command(ctx.send, 'No playlists in database',
@@ -1386,6 +1388,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         ]
         table = DapperTable(headers, rows_per_message=15)
         for (count, item) in enumerate(playlist_items):
+            if '__playhistory__' in item.name:
+                continue
             last_queued = 'N/A'
             if item.last_queued:
                 last_queued = item.last_queued.strftime('%Y-%m-%d %H:%M:%S')
