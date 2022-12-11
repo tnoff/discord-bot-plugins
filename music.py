@@ -17,7 +17,8 @@ from discord.ext import commands
 from moviepy.editor import AudioFileClip, afx
 from requests import get as requests_get
 from requests import post as requests_post
-from sqlalchemy import Column, DateTime, Integer, String
+from sqlalchemy import desc
+from sqlalchemy import Boolean, Column, DateTime, Integer, String
 from sqlalchemy import ForeignKey, UniqueConstraint
 from sqlalchemy.exc import IntegrityError
 from yt_dlp import YoutubeDL
@@ -71,6 +72,7 @@ class Playlist(BASE):
     server_id = Column(String(128))
     last_queued = Column(DateTime, nullable=True)
     created_at = Column(DateTime)
+    is_history = Column(Boolean)
 
 
 class PlaylistItem(BASE):
@@ -87,6 +89,7 @@ class PlaylistItem(BASE):
     video_id = Column(String(32))
     uploader = Column(String(256))
     playlist_id = Column(Integer, ForeignKey('playlist.id'))
+    created_at = Column(DateTime)
 
 #
 # Exceptions
@@ -576,7 +579,7 @@ class MusicPlayer:
     When the bot disconnects from the Voice it's instance will be destroyed.
     '''
 
-    def __init__(self, bot, guild, cog_cleanup, channel, logger, ytdl, max_song_length, queue_max_size, delete_after):
+    def __init__(self, bot, guild, cog_cleanup, channel, logger, ytdl, max_song_length, queue_max_size, delete_after, history_playlist_id):
         self.bot = bot
         self.logger = logger
         self.guild = guild
@@ -584,6 +587,7 @@ class MusicPlayer:
         self.cog_cleanup = cog_cleanup
         self.ytdl = ytdl
         self.delete_after = delete_after
+        self.history_playlist_id = history_playlist_id
 
         self.logger.info(f'Max length for music queue in guild {self.guild.name} is {queue_max_size}')
         self.download_queue = MyQueue(maxsize=queue_max_size)
@@ -822,11 +826,18 @@ class MusicPlayer:
                     source_dict['file_path'].unlink()
             except QueueEmpty:
                 break
+        history_items = []
+        while True:
+            try:
+                history_items.append(self.history.get_nowait())
+            except QueueEmpty:
+                break
         self.history.clear()
         self.download_queue.clear()
         self.play_queue.clear()
         for message in messages:
             await retry_discord_message_command(message.delete)
+        return history_items
 
     async def destroy(self, guild):
         '''
@@ -905,7 +916,18 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if player.current_path and player.current_path.exists():
             player.current_path.unlink()
         await player.clear_queue_messages()
-        await player.clear_remaining_queue()
+        history_items = await player.clear_remaining_queue()
+        if player.history_playlist_id:
+            playlist = self.db_session.query(Playlist).get(player.history_playlist_id)
+            for item in history_items:
+                try:
+                    self.__playlist_add_item(guild.id, playlist, item['id'], item['title'], item['uploader'])
+                except PlaylistMaxLength:
+                    self.db_session.query(PlaylistItem).\
+                        filter(PlaylistItem.playlist_id == playlist.id).\
+                        order_by(desc(PlaylistItem.created_at)).limit(1).delete()
+                    self.__playlist_add_item(guild.id, playlist, item['id'], item['title'], item['uploader'])
+
         # See if we need to delete
         try:
             del self.players[guild.id]
@@ -939,9 +961,22 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                   spotify_client=self.spotify_client, youtube_client=self.youtube_client,
                                   delete_after=self.delete_after,
                                   enable_audio_processing=self.enable_audio_processing)
+            history_playlist_id = None
+            if not self.db_session:
+                history_playlist = self.db_session.query(Playlist).\
+                    filter(Playlist.server_id == ctx.guild.id).\
+                    filter(Playlist.is_history == True).first()
+
+                if not history_playlist:
+                    history_playlist = Playlist(name=f'__playhistory__{ctx.guild.id}',
+                                                server_id=ctx.guild.id,
+                                                created_at=datetime.utcnow(),
+                                                is_history=False)
+                history_playlist_id = history_playlist.id
             player = MusicPlayer(ctx.bot, ctx.guild, ctx.cog.cleanup, ctx.channel,
                                  self.logger, ytdl, self.max_song_length,
-                                 self.queue_max_size, self.delete_after)
+                                 self.queue_max_size, self.delete_after, history_playlist_id)
+
             self.players[ctx.guild.id] = player
 
         return player
@@ -1020,7 +1055,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         if player.play_queue.full():
             return await retry_discord_message_command(ctx.send, 'Queue is full, cannot add more songs',
-                                            delete_after=self.delete_after)
+                                                       delete_after=self.delete_after)
 
         entries = await player.ytdl.check_source(search, ctx.guild.id, ctx.author.name, self.bot.loop)
         for entry in entries:
@@ -1283,9 +1318,14 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not await self.__check_database_session(ctx):
             retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
             return None
-        playlist = Playlist(name=shorten_string_cjk(name, 256),
+        playlist_name = shorten_string_cjk(name, 256)
+        if '__playhistory__' in playlist_name.lower():
+            await retry_discord_message_command(ctx.send, f'Unable to create playlist "{name}", name cannot contain __playhistory__')
+            return None
+        playlist = Playlist(name=playlist_name,
                             server_id=ctx.guild.id,
-                            created_at=datetime.utcnow())
+                            created_at=datetime.utcnow(),
+                            is_history=False)
         try:
             self.db_session.add(playlist)
             self.db_session.commit()
@@ -1295,7 +1335,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return None
         self.logger.info(f'Playlist created "{playlist.name}" with ID {playlist.id} in guild {ctx.guild.id}')
         await retry_discord_message_command(ctx.send, f'Created playlist "{name}"',
-                                 delete_after=self.delete_after)
+                                            delete_after=self.delete_after)
         return playlist
 
     @playlist.command(name='create')
@@ -1358,17 +1398,18 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         for mess in messages:
             await retry_discord_message_command(ctx.send, mess, delete_after=self.delete_after)
 
-    def __playlist_add_item(self, ctx, playlist, data_id, data_title, data_uploader):
+    def __playlist_add_item(self, guild_id, playlist, data_id, data_title, data_uploader):
         self.logger.info(f'Adding video_id {data_id} to playlist "{playlist.name}" '
-                         f' in guild {ctx.guild.id}')
+                         f' in guild {guild_id}')
         item_count = self.db_session.query(PlaylistItem).filter(PlaylistItem.playlist_id == playlist.id).count()
-        if item_count >= self.queue_max_size:
+        if item_count >= (self.queue_max_size * 2):
             raise PlaylistMaxLength(f'Playlist {playlist.id} hit max length')
 
         playlist_item = PlaylistItem(title=shorten_string_cjk(data_title, 256),
                                      video_id=data_id,
                                      uploader=shorten_string_cjk(data_uploader, 256),
-                                     playlist_id=playlist.id)
+                                     playlist_id=playlist.id,
+                                     created_at=datetime.utcnow())
         try:
             self.db_session.add(playlist_item)
             self.db_session.commit()
@@ -1420,7 +1461,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             self.logger.info(f'Adding video_id {source_dict["id"]} to playlist "{playlist.name}" '
                              f' in guild {ctx.guild.id}')
             try:
-                playlist_item = self.__playlist_add_item(ctx, playlist, source_dict['id'], source_dict['title'], source_dict['uploader'])
+                playlist_item = self.__playlist_add_item(ctx.build.id, playlist, source_dict['id'], source_dict['title'], source_dict['uploader'])
             except PlaylistMaxLength:
                 retry_discord_message_command(ctx.send, f'Cannot add more items to playlist "{playlist.name}", already max size', delete_after=self.delete_after)
                 return
@@ -1579,6 +1620,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 item.title,
                 uploader,
             ])
+            # Backwards compat for new field
+            if not item.created_at:
+                item.created_at = datetime.utcnow()
+                self.db_session.add(item)
+                self.db_session.commit()
         messages = [f'```{t}```' for t in table.print()]
         for mess in messages:
             await retry_discord_message_command(ctx.send, mess, delete_after=self.delete_after)
@@ -1678,7 +1724,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                             delete_after=self.delete_after)
         for data in queue._queue: #pylint:disable=protected-access
             try:
-                playlist_item = self.__playlist_add_item(ctx, playlist, data['id'], data['title'], data['uploader'])
+                playlist_item = self.__playlist_add_item(ctx.guild.id, playlist, data['id'], data['title'], data['uploader'])
             except PlaylistMaxLength:
                 retry_discord_message_command(ctx.send, f'Cannot add more items to playlist "{playlist.name}", already max size', delete_after=self.delete_after)
                 break
@@ -1732,11 +1778,18 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.logger.info(f'Playlist queue called for playlist "{playlist_index}" in server "{ctx.guild.id}"')
         query = self.db_session.query(PlaylistItem).\
             filter(PlaylistItem.playlist_id == playlist.id)
-        playlist_items = [item for item in query]
+        playlist_items = []
+        # Backwards compat for new field
+        for item in query:
+            playlist_items.append(item)
+            if not item.created_at:
+                item.created_at = datetime.utcnow()
+                self.db_session.add(item)
+                self.db_session.commit()
 
         if shuffle:
             await retry_discord_message_command(ctx.send, 'Shuffling playlist items',
-                                     delete_after=self.delete_after)
+                                                delete_after=self.delete_after)
             random_shuffle(playlist_items)
 
         broke_early = False
@@ -1844,7 +1897,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         query = self.db_session.query(PlaylistItem).filter(PlaylistItem.playlist_id == playlist_two.id)
         for item in query:
             try:
-                playlist_item = self.__playlist_add_item(ctx, playlist_one, item.video_id, item.title, item.uploader)
+                playlist_item = self.__playlist_add_item(ctx.guild.id, playlist_one, item.video_id, item.title, item.uploader)
             except PlaylistMaxLength:
                 retry_discord_message_command(ctx.send, f'Cannot add more items to playlist "{playlist_one.name}", already max size', delete_after=self.delete_after)
                 return
