@@ -663,14 +663,14 @@ class MusicPlayer:
                 await retry_discord_message_command(queue_message.delete)
             self.queue_messages = []
         elif len(self.queue_messages) > len(new_queue_strings):
-            # TODO fix this logic, but for now just assume we only delete the last message
-            queue_message = self.queue_messages.pop(-1)
-            await retry_discord_message_command(queue_message.delete)
+            for _ in range(len(self.queue_messages) - len(new_queue_strings)):
+                queue_message = self.queue_messages.pop(-1)
+                await retry_discord_message_command(queue_message.delete)
         for (count, queue_message) in enumerate(self.queue_messages):
             await retry_discord_message_command(queue_message.edit, content=new_queue_strings[count])
         if len(self.queue_messages) < len(new_queue_strings):
-            # TODO fix this logic, but for now assume its one message
-            self.queue_messages.append(await retry_discord_message_command(self.channel.send, new_queue_strings[-1]))
+            for table in new_queue_strings[-(len(new_queue_strings) - len(self.queue_messages)):]:
+                self.queue_messages.append(await retry_discord_message_command(self.channel.send, table))
         await self.release_lock()
 
     async def download_files(self):
