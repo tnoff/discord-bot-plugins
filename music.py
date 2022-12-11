@@ -658,16 +658,19 @@ class MusicPlayer:
 
         self.logger.debug(f'Updating queue messages in channel {self.channel.id} in guild {self.guild.id}')
         new_queue_strings = get_queue_message(self.play_queue) or []
-        if delete_messages or len(self.queue_messages) != len(new_queue_strings):
+        if delete_messages:
             for queue_message in self.queue_messages:
                 await retry_discord_message_command(queue_message.delete)
             self.queue_messages = []
-            for table in new_queue_strings:
-                self.queue_messages.append(await retry_discord_message_command(self.channel.send, table))
-        else:
-            # Can skip first message as its likely just column names
-            for (count, queue_message) in enumerate(self.queue_messages):
-                await retry_discord_message_command(queue_message.edit, content=new_queue_strings[count])
+        elif len(self.queue_messages) > len(new_queue_strings):
+            # TODO fix this logic, but for now just assume we only delete the last message
+            queue_message = self.queue_messages.pop(-1)
+            await retry_discord_message_command(queue_message.delete)
+        for (count, queue_message) in enumerate(self.queue_messages):
+            await retry_discord_message_command(queue_message.edit, content=new_queue_strings[count])
+        if len(self.queue_messages) < len(new_queue_strings):
+            # TODO fix this logic, but for now assume its one message
+            self.queue_messages.append(await retry_discord_message_command(self.channel.send, new_queue_strings[-1]))
         await self.release_lock()
 
     async def download_files(self):
@@ -962,7 +965,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                   delete_after=self.delete_after,
                                   enable_audio_processing=self.enable_audio_processing)
             history_playlist_id = None
-            if not self.db_session:
+            if self.db_session:
                 history_playlist = self.db_session.query(Playlist).\
                     filter(Playlist.server_id == ctx.guild.id).\
                     filter(Playlist.is_history == True).first()
