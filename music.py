@@ -317,7 +317,7 @@ def get_queue_message(queue):
         },
         {
             'name': 'Title',
-            'length': 48,
+            'length': 64,
         },
         {
             'name': 'Uploader',
