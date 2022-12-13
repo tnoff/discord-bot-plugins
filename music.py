@@ -631,12 +631,22 @@ class MusicPlayer:
         '''
         self.lock_file.write_text('unlocked')
 
-    async def check_latest_message(self, last_message_id):
+    async def check_latest_message(self):
         '''
-        Check if latest message in history is no longer queue message sent
+        Check if known queue messages match whats in channel history
         '''
-        history = await self.channel.history(limit=1).flatten()
-        return history[0].id == last_message_id
+        # Get oldest message first, check np first
+        history = await self.channel.history(limit=(len(self.queue_messages) + 1), oldest_first=True).flatten()
+        if self.np and self.np.id != history[0].id:
+            return False
+        # If no np, start queue messages at 0, else assume start at 1
+        start_index = 1
+        if not self.np:
+            start_index = 0
+        for (count, item) in enumerate(history[start_index:]):
+            if item.id != history[start_index + count].id:
+                return False
+        return True
 
     async def clear_queue_messages(self):
         '''
@@ -722,15 +732,17 @@ class MusicPlayer:
         '''
         Return true if queue messages should be deleted and re-sent, false if not
         '''
-        last_message_check = None
-        if self.queue_messages:
-            last_message_check = await self.check_latest_message(self.queue_messages[-1].id)
         # Double check np message exists
         if self.np:
             try:
                 await retry_discord_message_command(self.channel.fetch_message, self.np.id)
             except NotFound:
                 self.np = None
+
+        last_message_check = None
+        if self.queue_messages:
+            last_message_check = await self.check_latest_message()
+
         # If not exists, send
         if self.np is None:
             self.np = await retry_discord_message_command(self.channel.send, message)
@@ -935,9 +947,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                         order_by(desc(PlaylistItem.created_at)).limit(1).delete()
                     self.__playlist_add_item(guild.id, playlist, item['id'], item['title'], item['uploader'])
 
-        guild_path = self.download_dir / f'{ctx.guild.id}'
+        guild_path = self.download_dir / f'{guild.id}'
         if guild_path.exists():
-            rm_dir(guild_path)
+            rm_tree(guild_path)
 
         # See if we need to delete
         try:
