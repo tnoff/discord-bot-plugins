@@ -1767,7 +1767,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         return
 
     @playlist.command(name='queue')
-    async def playlist_queue(self, ctx, playlist_index, sub_command: Optional[str] = ''): #pylint:disable=too-many-branches
+    async def playlist_queue(self, ctx, playlist_index, sub_command: Optional[str] = ''):
         '''
         Add playlist to queue
 
@@ -1776,9 +1776,34 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         Sub commands - [shuffle]
             shuffle - Shuffle playlist when entering it into queue
         '''
-        return await self.retry_command(self.__playlist_queue, ctx, playlist_index, sub_command)
+        # Make sure sub command is valid
+        shuffle = False
+        if sub_command:
+            if sub_command.lower() == 'shuffle':
+                shuffle = True
+            else:
+                return await retry_discord_message_command(ctx.send, f'Invalid sub command {sub_command}',
+                                                           delete_after=self.delete_after)
+        return await self.retry_command(self.__playlist_queue, ctx, playlist_index, shuffle)
 
-    async def __playlist_queue(self, ctx, playlist_index, sub_command):
+    @playlist.command(name='random-play')
+    async def playlist_random_play(self, ctx, playlist_index, sub_command: Optional[int] = 32):
+        '''
+        Play random songs from history
+        playlist_index: integer [Required]
+            ID of playlist
+        Sub commands - [number]
+            number - Number of songs to add to the queue at maximum
+        '''
+        max_num = None
+        if sub_command:
+            try:
+                max_num = int(sub_command)
+            except ValueError:
+                pass
+        return await self.retry_command(self.__playlist_queue, ctx, playlist_index, True, max_num=max_num)
+
+    async def __playlist_queue(self, ctx, playlist_index, shuffle, max_num=None):
         if not await self.check_user_role(ctx):
             return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
@@ -1789,14 +1814,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
             return None
-        shuffle = False
-        # Make sure sub command is valid
-        if sub_command:
-            if sub_command.lower() == 'shuffle':
-                shuffle = True
-            else:
-                return await retry_discord_message_command(ctx.send, f'Invalid sub command {sub_command}',
-                                      delete_after=self.delete_after)
 
         vc = ctx.voice_client
         if not vc:
@@ -1819,6 +1836,14 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             await retry_discord_message_command(ctx.send, 'Shuffling playlist items',
                                                 delete_after=self.delete_after)
             random_shuffle(playlist_items)
+
+        if max_num:
+            if max_num < 0:
+                await retry_discord_message_command(ctx.send, f'Invalid number of songs {max_num}',
+                                                    delete_after=self.delete_after)
+                return
+            if max_num <= len(playlist_items):
+                playlist_items = playlist_items[:max_num]
 
         broke_early = False
         for item in playlist_items:
