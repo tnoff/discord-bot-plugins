@@ -1,5 +1,6 @@
 from asyncio import sleep
 from asyncio import Event, Queue, QueueEmpty, QueueFull, TimeoutError as asyncio_timeout
+from copy import deepcopy
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -916,9 +917,12 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 await retry_discord_message_command(player.np.delete)
         except NotFound:
             pass
+
         if player.current_path and player.current_path.exists():
             player.current_path.unlink()
+
         await player.clear_queue_messages()
+
         history_items = await player.clear_remaining_queue()
         if player.history_playlist_id:
             playlist = self.db_session.query(Playlist).get(player.history_playlist_id)
@@ -930,6 +934,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                         filter(PlaylistItem.playlist_id == playlist.id).\
                         order_by(desc(PlaylistItem.created_at)).limit(1).delete()
                     self.__playlist_add_item(guild.id, playlist, item['id'], item['title'], item['uploader'])
+
+        guild_path = self.download_dir / f'{ctx.guild.id}'
+        if guild_path.exists():
+            rm_dir(guild_path)
 
         # See if we need to delete
         try:
@@ -1369,7 +1377,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
         playlist_items = self.db_session.query(Playlist).\
             filter(Playlist.server_id == str(ctx.guild.id))
-        playlist_items = [p for p in playlist_items if '__playhistory__' not in item.name]
+        playlist_items = [p for p in playlist_items if '__playhistory__' not in p.name]
 
         if not playlist_items:
             return await retry_discord_message_command(ctx.send, 'No playlists in database',
@@ -1718,16 +1726,19 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         player = self.get_player(ctx)
 
-        queue = player.play_queue
+        # Do a deepcopy here so list doesn't mutate as we iterate
         if is_history:
-            queue = player.history
+            queue_copy = deepcopy(player.history._queue) #pylint:disable=protected-access
+        else:
+            queue_copy = deepcopy(player.play_queue._queue) #pylint:disable=protected-access
 
         self.logger.info(f'Saving queue contents to playlist "{name}", is_history? {is_history}')
 
-        if queue.empty():
+        if len(queue_copy) == 0:
             return await retry_discord_message_command(ctx.send, 'There are no songs to add to playlist',
-                                            delete_after=self.delete_after)
-        for data in queue._queue: #pylint:disable=protected-access
+                                                       delete_after=self.delete_after)
+
+        for data in queue_copy:
             try:
                 playlist_item = self.__playlist_add_item(ctx.guild.id, playlist, data['id'], data['title'], data['uploader'])
             except PlaylistMaxLength:
