@@ -43,6 +43,8 @@ MAX_SONG_LENGTH_DEFAULT = 60 * 15
 # Timeout for web requests
 REQUESTS_TIMEOUT = 180
 
+DEFAULT_RANDOM_QUEUE_LENGTH = 32
+
 # Spotify
 SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/api/token'
 SPOTIFY_BASE_URL = 'https://api.spotify.com/v1/'
@@ -1776,7 +1778,16 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         Sub commands - [shuffle]
             shuffle - Shuffle playlist when entering it into queue
         '''
+        if not await self.check_user_role(ctx):
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
+        if not await self.__check_author_voice_chat(ctx):
+            return
+        if not await self.__check_database_session(ctx):
+            return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
         # Make sure sub command is valid
+        playlist = await self.__get_playlist(playlist_index, ctx)
+        if not playlist:
+            return None
         shuffle = False
         if sub_command:
             if sub_command.lower() == 'shuffle':
@@ -1784,43 +1795,43 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             else:
                 return await retry_discord_message_command(ctx.send, f'Invalid sub command {sub_command}',
                                                            delete_after=self.delete_after)
-        return await self.retry_command(self.__playlist_queue, ctx, playlist_index, shuffle)
+        return await self.retry_command(self.__playlist_queue, ctx, playlist, shuffle)
 
-    @playlist.command(name='random-play')
-    async def playlist_random_play(self, ctx, playlist_index, sub_command: Optional[int] = 32):
+    @commands.command(name='random-play')
+    async def playlist_random_play(self, ctx, sub_command: Optional[str] = ''):
         '''
         Play random songs from history
-        playlist_index: integer [Required]
-            ID of playlist
-        Sub commands - [number]
-            number - Number of songs to add to the queue at maximum
-        '''
-        max_num = None
-        if sub_command:
-            try:
-                max_num = int(sub_command)
-            except ValueError:
-                pass
-        return await self.retry_command(self.__playlist_queue, ctx, playlist_index, True, max_num=max_num)
 
-    async def __playlist_queue(self, ctx, playlist_index, shuffle, max_num=None):
+        Sub commands - [max_num]
+            max_num - Number of songs to add to the queue at maximum
+        '''
         if not await self.check_user_role(ctx):
             return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
             return
         if not await self.__check_database_session(ctx):
             return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
+        max_num = DEFAULT_RANDOM_QUEUE_LENGTH
+        if sub_command:
+            try:
+                max_num = int(sub_command)
+            except ValueError:
+                retry_discord_message_command(ctx.send, f'Using default number of max songs {DEFAULT_RANDOM_QUEUE_LENGTH}', delete_after=self.delete_after)
+        history_playlist = self.db_session.query(Playlist).\
+            filter(Playlist.server_id == ctx.guild.id).\
+            filter(Playlist.is_history == True).first()
 
-        playlist = await self.__get_playlist(playlist_index, ctx)
-        if not playlist:
-            return None
+        if not history_playlist:
+            return await retry_discord_message_command(ctx.send, 'Unable to find history for server', delete_after=self.delete_after)
+        return await self.retry_command(self.__playlist_queue, ctx, history_playlist, True, max_num=max_num)
 
+    async def __playlist_queue(self, ctx, playlist, shuffle, max_num=None):
         vc = ctx.voice_client
         if not vc:
             await ctx.invoke(self.connect_)
         player = self.get_player(ctx)
 
-        self.logger.info(f'Playlist queue called for playlist "{playlist_index}" in server "{ctx.guild.id}"')
+        self.logger.info(f'Playlist queue called for playlist "{playlist.name}" in server "{ctx.guild.id}"')
         query = self.db_session.query(PlaylistItem).\
             filter(PlaylistItem.playlist_id == playlist.id)
         playlist_items = []
