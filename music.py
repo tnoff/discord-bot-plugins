@@ -1369,7 +1369,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
         playlist_items = self.db_session.query(Playlist).\
             filter(Playlist.server_id == str(ctx.guild.id))
-        playlist_items = [p for p in playlist_items]
+        playlist_items = [p for p in playlist_items if '__playhistory__' not in item.name]
 
         if not playlist_items:
             return await retry_discord_message_command(ctx.send, 'No playlists in database',
@@ -1391,8 +1391,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         ]
         table = DapperTable(headers, rows_per_message=15)
         for (count, item) in enumerate(playlist_items):
-            if '__playhistory__' in item.name:
-                continue
             last_queued = 'N/A'
             if item.last_queued:
                 last_queued = item.last_queued.strftime('%Y-%m-%d %H:%M:%S')
