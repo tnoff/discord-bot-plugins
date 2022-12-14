@@ -37,13 +37,18 @@ DELETE_AFTER_DEFAULT = 300
 # Max queue size
 QUEUE_MAX_SIZE_DEFAULT = 128
 
+# Max playlists per server (not including history)
+SERVER_PLAYLIST_MAX_DEFAULT = 64
+
 # Max song length
 MAX_SONG_LENGTH_DEFAULT = 60 * 15
 
 # Timeout for web requests
 REQUESTS_TIMEOUT = 180
 
+# Length of random play queue
 DEFAULT_RANDOM_QUEUE_LENGTH = 32
+
 
 # Spotify
 SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/api/token'
@@ -878,6 +883,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.players = {}
         self.delete_after = settings.get('music_message_delete_after', DELETE_AFTER_DEFAULT)
         self.queue_max_size = settings.get('music_queue_max_size', QUEUE_MAX_SIZE_DEFAULT)
+        self.server_playlist_max = settings.get('music_server_playlist_max', SERVER_PLAYLIST_MAX_DEFAULT)
         self.max_song_length = settings.get('music_max_song_length', MAX_SONG_LENGTH_DEFAULT)
         self.download_dir = settings.get('music_download_dir', None)
         self.enable_audio_processing = settings.get('music_enable_audio_processing', False)
@@ -942,7 +948,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             playlist = self.db_session.query(Playlist).get(player.history_playlist_id)
             for item in history_items:
                 try:
-                    self.__playlist_add_item(guild.id, playlist, item['id'], item['title'], item['uploader'])
+                    self.__playlist_add_item(guild.id, playlist, item['id'], item['title'], item['uploader'], ignore_fail=True)
                 except PlaylistMaxLength:
                     self.db_session.query(PlaylistItem).\
                         filter(PlaylistItem.playlist_id == playlist.id).\
@@ -1345,9 +1351,15 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not await self.__check_database_session(ctx):
             retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
             return None
+        # Check name doesn't conflict with history
         playlist_name = shorten_string_cjk(name, 256)
         if '__playhistory__' in playlist_name.lower():
             await retry_discord_message_command(ctx.send, f'Unable to create playlist "{name}", name cannot contain __playhistory__')
+            return None
+        # Check we haven't hit max playlist for server
+        server_playlist_count = self.db_session.query(Playlist).filter(Playlist.server_id == ctx.guild.id).count()
+        if server_playlist_count >= self.server_playlist_max:
+            await retry_discord_message_command(ctx.send, f'Unable to create playlist "{name}", already hit max playlists for server')
             return None
         playlist = Playlist(name=playlist_name,
                             server_id=ctx.guild.id,
@@ -1425,7 +1437,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         for mess in messages:
             await retry_discord_message_command(ctx.send, mess, delete_after=self.delete_after)
 
-    def __playlist_add_item(self, guild_id, playlist, data_id, data_title, data_uploader):
+    def __playlist_add_item(self, guild_id, playlist, data_id, data_title, data_uploader, ignore_fail=False):
         self.logger.info(f'Adding video_id {data_id} to playlist "{playlist.name}" '
                          f' in guild {guild_id}')
         item_count = self.db_session.query(PlaylistItem).filter(PlaylistItem.playlist_id == playlist.id).count()
@@ -1442,8 +1454,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             self.db_session.commit()
             return playlist_item
         except IntegrityError as e:
-            self.logger.exception(e)
-            self.logger.error(str(e))
+            if not ignore_fail:
+                self.logger.exception(e)
+                self.logger.error(str(e))
             self.db_session.rollback()
             return None
 
