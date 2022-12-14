@@ -643,17 +643,8 @@ class MusicPlayer:
         Check if known queue messages match whats in channel history
         '''
         # Get oldest message first, check np first
-        history = await self.channel.history(limit=(len(self.queue_messages) + 1), oldest_first=True).flatten()
-        if self.np and self.np.id != history[0].id:
-            return False
-        # If no np, start queue messages at 0, else assume start at 1
-        start_index = 1
-        if not self.np:
-            start_index = 0
-        for (count, item) in enumerate(history[start_index:]):
-            if item.id != history[start_index + count].id:
-                return False
-        return True
+        history = await self.channel.history(limit=1)
+        return history[0].id == self.queue_messages[-1].id
 
     async def clear_queue_messages(self):
         '''
@@ -904,10 +895,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 self.download_dir.mkdir(exist_ok=True, parents=True)
         else:
             self.download_dir = Path(TemporaryDirectory().name) #pylint:disable=consider-using-with
-
-    def __exit__(self, *args, **kwargs):
-        if self.download_dir:
-            rm_tree(self.download_dir)
 
     async def __check_database_session(self, ctx):
         '''
