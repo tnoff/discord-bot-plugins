@@ -644,9 +644,15 @@ class MusicPlayer:
         '''
         Check if known queue messages match whats in channel history
         '''
-        # Get oldest message first, check np first
-        history = await self.text_channel.history(limit=1).flatten()
-        return history[0].id == self.queue_messages[-1].id
+        num_messages = len(self.queue_messages)
+        history = await self.text_channel.history(limit=num_messages + 1).flatten()
+        for (count, hist_item) in enumerate(history[:-1]):
+            mess = self.queue_messages[num_messages - 1 - count]
+            if mess.id != hist_item.id:
+                return False
+        if history[-1].id != self.np.id:
+            return False
+        return True
 
     async def clear_queue_messages(self):
         '''
