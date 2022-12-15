@@ -618,7 +618,8 @@ class MusicPlayer:
         bot.loop.create_task(self.download_files())
 
     def __exit__(self, *args, **kwargs):
-        self.lock_file.unlink()
+        if self.lock_file.exists():
+            self.lock_file.unlink()
 
     async def acquire_lock(self, wait_timeout=600):
         '''
@@ -1002,6 +1003,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         guild_path = self.download_dir / f'{guild.id}'
         if guild_path.exists():
             rm_tree(guild_path)
+
+        if player.lock_file.exists():
+            player.lock_file.unlink()
 
         # See if we need to delete
         try:
