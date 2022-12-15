@@ -49,6 +49,9 @@ REQUESTS_TIMEOUT = 180
 # Length of random play queue
 DEFAULT_RANDOM_QUEUE_LENGTH = 32
 
+# Timeout in seconds
+DISCONNECT_TIMEOUT = 60 * 15
+
 
 # Spotify
 SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/api/token'
@@ -61,6 +64,54 @@ YOUTUBE_PLAYLIST_REGEX = r'^https://(www.)?youtube.com/playlist\?list=(?P<playli
 
 # We only care about the following data in the yt-dlp dict
 YT_DLP_KEYS = ['id', 'title', 'webpage_url', 'uploader', 'duration']
+
+#
+# Common Functions
+#
+
+def max_song_filter_generator(max_song_length):
+    '''
+    Get function for filtering max song length
+    '''
+    def max_song_filter(info, *, incomplete): #pylint:disable=unused-argument
+        '''
+        Filter song based on max song length
+        '''
+        duration = info.get('duration')
+        if duration and duration > max_song_length:
+            raise SongTooLong(f'Song exceeds max length of {max_song_length}')
+    return max_song_filter
+
+def rm_tree(pth):
+    '''
+    Remove all files in a tree
+    '''
+    # https://stackoverflow.com/questions/50186904/pathlib-recursively-remove-directory
+    for child in pth.glob('*'):
+        if child.is_file():
+            child.unlink()
+        else:
+            rm_tree(child)
+    pth.rmdir()
+
+async def retry_discord_message_command(func, *args, **kwargs):
+    '''
+    Retry discord send message command, catch case of rate limiting
+    '''
+    max_retries = kwargs.pop('max_retries', 3)
+    retry = 0
+    while True:
+        retry += 1
+        try:
+            return await func(*args, **kwargs)
+        except HTTPException as ex:
+            if '429' not in str(ex):
+                raise
+            if retry <= max_retries:
+                sleep_for = 2 ** (retry - 1)
+                sleep(sleep_for)
+                continue
+            raise
 
 #
 # Music Tables
@@ -307,126 +358,96 @@ class MyQueue(Queue):
             self._queue.appendleft(item)
         return item
 
+#
+# Source File
+#
 
-def get_queue_message(queue):
+class SourceFile():
     '''
-    Get full queue message
+    Source file of downloaded content
     '''
-    if not queue._queue: #pylint:disable=protected-access
-        return None
-    headers = [
-        {
-            'name': 'Pos',
-            'length': 3,
-        },
-        {
-            'name': 'Wait Time',
-            'length': 9,
-        },
-        {
-            'name': 'Title',
-            'length': 64,
-        },
-        {
-            'name': 'Uploader',
-            'length': 32,
-        },
-    ]
-    table = DapperTable(headers, rows_per_message=15)
-    duration = 0
-    for (count, item) in enumerate(queue._queue): #pylint:disable=protected-access
-        uploader = item['uploader'] or ''
-        delta = timedelta(seconds=duration)
-        duration += item['duration']
-        table.add_row([
-            f'{count + 1}',
-            f'{str(delta)}',
-            item['title'],
-            uploader,
-        ])
-    return [f'```{t}```' for t in table.print()]
-
-def get_finished_path(file_path):
-    '''
-    Get 'finished path' for edited file
-    '''
-    return file_path.parent / (file_path.stem + '.finished.mp3')
-
-def get_editing_path(file_path):
-    '''
-    Get 'editing path' for editing files
-    '''
-    return file_path.parent / (file_path.stem + '.edited.mp3')
-
-def remove_file_path(file_path):
-    '''
-    If file path exists, remove, but check if still being edited just in case
-    '''
-    if file_path.exists():
-        finished_path = get_finished_path(file_path)
-        if finished_path.exists():
-            finished_path.unlink()
-        if not get_editing_path(file_path).exists():
-            file_path.unlink()
-
-def edit_audio_file(file_path):
-    '''
-    Normalize audio for file
-    '''
-    finished_path = get_finished_path(file_path)
-    editing_path = get_editing_path(file_path)
-    try:
-        edited_audio = AudioFileClip(str(file_path)).fx(afx.audio_normalize) #pylint:disable=no-member
-        edited_audio.write_audiofile(str(editing_path))
-        editing_path.rename(finished_path)
-        return finished_path
-    except OSError:
-        # File likely was deleted in middle
-        return None
-
-def max_song_filter_generator(max_song_length):
-    '''
-    Get function for filtering max song length
-    '''
-    def max_song_filter(info, *, incomplete): #pylint:disable=unused-argument
+    def __init__(self, ytdl_data, source_dict, logger, enable_audio_processing):
         '''
-        Filter song based on max song length
+        Init source file
+
+        ytdl_data                   :   youtuble-dlp data dict
+        source_dict                 :   Source dict passed to yt-dlp
+        logger                      :   Python logger
+        enable_audio_processing     :   Run processing functions after download
         '''
-        duration = info.get('duration')
-        if duration and duration > max_song_length:
-            raise SongTooLong(f'Song exceeds max length of {max_song_length}')
-    return max_song_filter
+        self.logger = logger
+        file_path = Path(self.ytdl.prepare_filename(ytdl_data))
+        self.logger.info(f'Downloaded url "{ytdl_data["webpage_url"]}" to file "{str(file_path)}"')
+        # Keep only keys we want, has alot of metadata we dont care about
+        self._new_dict = {}
+        for key in YT_DLP_KEYS:
+            try:
+                self._new_dict[key] = ytdl_data[key]
+            except KeyError:
+                pass
 
-def rm_tree(pth):
-    '''
-    Remove all files in a tree
-    '''
-    # https://stackoverflow.com/questions/50186904/pathlib-recursively-remove-directory
-    for child in pth.glob('*'):
-        if child.is_file():
-            child.unlink()
-        else:
-            rm_tree(child)
-    pth.rmdir()
+        # The modified time of download videos can be the time when it was actually uploaded to youtube
+        # Touch here to update the modified time, so that the cleanup check works as intendend
+        # Rename file to a random uuid name, that way we can have diff videos with same/similar names
+        uuid_path = file_path.parent / f'{uuid4()}{".".join(i for i in file_path.suffixes)}'
+        file_path.rename(uuid_path)
+        self.file_path = uuid_path
+        self.logger.info(f'Moved downloaded url "{self._new_dict["webpage_url"]}" to file "{uuid_path}"')
+        self._new_dict['requester'] = source_dict['requester']
+        self._new_dict['guild_id'] = source_dict['guild_id']
+        self._new_dict['file_path'] = uuid_path
+        if enable_audio_processing:
+            edited_path = self.edit_audio_file()
+            if edited_path:
+                self._new_dict['file_path'] = edited_path
+                uuid_path.unlink()
 
-async def retry_discord_message_command(func, *args, **kwargs):
-    '''
-    Retry discord send message command, catch case of rate limiting
-    '''
-    max_retries = kwargs.pop('max_retries', 3)
-    retry = 0
-    while True:
-        retry += 1
+    def __getattr__(self, key):
+        '''
+        Get attribute of dict
+        '''
+        return self._new_dict[key]
+
+    def __setattr__(self, key, value):
+        '''
+        Set attributes of dict
+        '''
+        self._new_dict[key] = value
+
+    def get_finished_path(self):
+        '''
+        Get 'finished path' for edited file
+        '''
+        return self.file_path.parent / (self.file_path.stem + '.finished.mp3')
+
+    def get_editing_path(self):
+        '''
+        Get 'editing path' for editing files
+        '''
+        return self.file_path.parent / (self.file_path.stem + '.edited.mp3')
+
+    def edit_audio_file(self):
+        '''
+        Normalize audio for file
+        '''
+        finished_path = self.get_finished_path()
+        editing_path = self.get_editing_path()
         try:
-            return await func(*args, **kwargs)
-        except HTTPException as ex:
-            if '429' not in str(ex):
-                raise
-            if retry <= max_retries:
-                sleep_for = 2 ** (retry - 1)
-                sleep(sleep_for)
-                continue
-            raise
+            self.logger.info(f'Editing audio in file {str(self.file_path)}')
+            edited_audio = AudioFileClip(str(self.file_path)).fx(afx.audio_normalize) #pylint:disable=no-member
+            edited_audio.write_audiofile(str(editing_path))
+            editing_path.rename(finished_path)
+            return finished_path
+        except OSError:
+            if editing_path.exists():
+                editing_path.unlink()
+            if finished_path.exists():
+                editing_path.unlink()
+            return self.file_path
+
+#
+# YTDL Download Client
+#
 
 class DownloadClient():
     '''
@@ -461,32 +482,7 @@ class DownloadClient():
         except KeyError:
             pass
 
-        # Get file path first
-        file_path = Path(self.ytdl.prepare_filename(data))
-        # Keep only keys we want, has alot of metadata we dont care about
-        new_dict = {}
-        for key in YT_DLP_KEYS:
-            try:
-                new_dict[key] = data[key]
-            except KeyError:
-                pass
-        self.logger.info(f'Downloaded url "{new_dict["webpage_url"]}" to file "{file_path}"')
-        # The modified time of download videos can be the time when it was actually uploaded to youtube
-        # Touch here to update the modified time, so that the cleanup check works as intendend
-        file_path.touch(exist_ok=True)
-        # Rename file to a random uuid name, that way we can have diff videos with same/similar names
-        uuid_path = file_path.parent / f'{uuid4()}{".".join(i for i in file_path.suffixes)}'
-        file_path.rename(uuid_path)
-        self.logger.info(f'Moved downloaded url "{new_dict["webpage_url"]}" to file "{uuid_path}"')
-        new_dict['requester'] = source_dict['requester']
-        new_dict['guild_id'] = source_dict['guild_id']
-        new_dict['file_path'] = uuid_path
-        if self.enable_audio_processing:
-            edited_path = edit_audio_file(uuid_path)
-            if edited_path:
-                new_dict['file_path'] = edited_path
-                uuid_path.unlink()
-        return new_dict
+        return SourceFile(data, source_dict, self.logger, self.enable_audio_processing)
 
     async def create_source(self, source_dict, loop, download=False):
         '''
@@ -576,6 +572,9 @@ class DownloadClient():
             })
         return all_entries
 
+#
+# Music Player for channel
+#
 
 class MusicPlayer:
     '''
@@ -587,11 +586,13 @@ class MusicPlayer:
     When the bot disconnects from the Voice it's instance will be destroyed.
     '''
 
-    def __init__(self, bot, guild, cog_cleanup, channel, logger, ytdl, max_song_length, queue_max_size, delete_after, history_playlist_id):
+    def __init__(self, bot, guild, cog_cleanup, text_channel, voice_channel, logger,
+                 ytdl, max_song_length, queue_max_size, delete_after, history_playlist_id):
         self.bot = bot
         self.logger = logger
         self.guild = guild
-        self.channel = channel
+        self.text_channel = text_channel
+        self.voice_channel = voice_channel
         self.cog_cleanup = cog_cleanup
         self.ytdl = ytdl
         self.delete_after = delete_after
@@ -608,6 +609,7 @@ class MusicPlayer:
         self.volume = 1
         self.max_song_length = max_song_length
         self.current_path = None
+        self.member_last_seen = None # Last time a member was in the voice channel
 
         # For showing messages
         self.lock_file = Path(NamedTemporaryFile(delete=False).name) #pylint:disable=consider-using-with
@@ -643,7 +645,7 @@ class MusicPlayer:
         Check if known queue messages match whats in channel history
         '''
         # Get oldest message first, check np first
-        history = await self.channel.history(limit=1)
+        history = await self.text_channel.history(limit=1).flatten()
         return history[0].id == self.queue_messages[-1].id
 
     async def clear_queue_messages(self):
@@ -656,6 +658,45 @@ class MusicPlayer:
         self.queue_messages = []
         await self.release_lock()
 
+    def get_queue_message(self):
+        '''
+        Get full queue message
+        '''
+        if not self.play_queue._queue: #pylint:disable=protected-access
+            return None
+        headers = [
+            {
+                'name': 'Pos',
+                'length': 3,
+            },
+            {
+                'name': 'Wait Time',
+                'length': 9,
+            },
+            {
+                'name': 'Title',
+                'length': 64,
+            },
+            {
+                'name': 'Uploader',
+                'length': 32,
+            },
+        ]
+        table = DapperTable(headers, rows_per_message=15)
+        duration = 0
+        queue_items = deepcopy(self.play_queue._queue) #pylint:disable=protected-access
+        for (count, item) in enumerate(queue_items):
+            uploader = item['uploader'] or ''
+            delta = timedelta(seconds=duration)
+            duration += item['duration']
+            table.add_row([
+                f'{count + 1}',
+                f'{str(delta)}',
+                item['title'],
+                uploader,
+            ])
+        return [f'```{t}```' for t in table.print()]
+
     async def update_queue_strings(self, delete_messages=False):
         '''
         Update queue message in channel
@@ -665,8 +706,8 @@ class MusicPlayer:
             await self.release_lock()
             return
 
-        self.logger.debug(f'Updating queue messages in channel {self.channel.id} in guild {self.guild.id}')
-        new_queue_strings = get_queue_message(self.play_queue) or []
+        self.logger.debug(f'Updating queue messages in channel {self.text_channel.id} in guild {self.guild.id}')
+        new_queue_strings = self.get_queue_message() or []
         if delete_messages:
             for queue_message in self.queue_messages:
                 await retry_discord_message_command(queue_message.delete)
@@ -679,7 +720,7 @@ class MusicPlayer:
             await retry_discord_message_command(queue_message.edit, content=new_queue_strings[count])
         if len(self.queue_messages) < len(new_queue_strings):
             for table in new_queue_strings[-(len(new_queue_strings) - len(self.queue_messages)):]:
-                self.queue_messages.append(await retry_discord_message_command(self.channel.send, table))
+                self.queue_messages.append(await retry_discord_message_command(self.text_channel.send, table))
         await self.release_lock()
 
     async def download_files(self):
@@ -733,7 +774,7 @@ class MusicPlayer:
         # Double check np message exists
         if self.np:
             try:
-                await retry_discord_message_command(self.channel.fetch_message, self.np.id)
+                await retry_discord_message_command(self.text_channel.fetch_message, self.np.id)
             except NotFound:
                 self.np = None
 
@@ -743,12 +784,12 @@ class MusicPlayer:
 
         # If not exists, send
         if self.np is None:
-            self.np = await retry_discord_message_command(self.channel.send, message)
+            self.np = await retry_discord_message_command(self.text_channel.send, message)
             return True
         # If message after existing queue, print
         if not last_message_check:
             await retry_discord_message_command(self.np.delete)
-            self.np = await retry_discord_message_command(self.channel.send, message)
+            self.np = await retry_discord_message_command(self.text_channel.send, message)
             return True
         await retry_discord_message_command(self.np.edit, content=message)
         return False
@@ -764,17 +805,27 @@ class MusicPlayer:
 
             try:
                 # Wait for the next song. If we timeout cancel the player and disconnect...
-                async with timeout(self.max_song_length + 60): # Max song length + 1 min
+                async with timeout(DISCONNECT_TIMEOUT):
                     source_dict = await self.play_queue.get()
             except asyncio_timeout:
-                self.logger.error(f'Music bot reached timeout on queue in guild "{self.guild.name}"')
+                self.logger.info(f'Music bot reached timeout on queue in guild "{self.guild.name}"')
                 return await self.destroy(self.guild)
+
+            # Check if anyone currently in server
+            # If no one in server for long time then we leave
+            if not self.voice_channel.members:
+                if self.member_last_seen and (datetime.utcnow() - self.member_last_seen).seconds > DISCONNECT_TIMEOUT:
+                    self.logger.info(f'Music bot reached timeout, no members in voice chat since {str(self.member_last_seen)}')
+                    return await self.destroy(self.guild)
+                self.member_last_seen = datetime.utcnow()
+            else:
+                self.member_last_seen = None
 
             self.current_path = source_dict['file_path']
 
             # Double check file didnt go away
             if not source_dict['file_path'].exists():
-                await retry_discord_message_command(self.channel.send, f'Unable to play "{source_dict["title"]}", local file dissapeared')
+                await retry_discord_message_command(self.text_channel.send, f'Unable to play "{source_dict["title"]}", local file dissapeared')
                 continue
 
             source = FFmpegPCMAudio(str(source_dict['file_path']))
@@ -952,7 +1003,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         except KeyError:
             pass
 
-    def get_player(self, ctx):
+    def get_player(self, ctx, voice_channel):
         '''
         Retrieve the guild player, or generate one.
         '''
@@ -993,7 +1044,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                     self.db_session.add(history_playlist)
                     self.db_session.commit()
                 history_playlist_id = history_playlist.id
-            player = MusicPlayer(ctx.bot, ctx.guild, ctx.cog.cleanup, ctx.channel,
+            player = MusicPlayer(ctx.bot, ctx.guild, ctx.cog.cleanup, ctx.channel, voice_channel,
                                  self.logger, ytdl, self.max_song_length,
                                  self.queue_max_size, self.delete_after, history_playlist_id)
 
@@ -1009,7 +1060,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             channel = ctx.author.voice.channel
         except AttributeError:
             await retry_discord_message_command(ctx.send, f'"{ctx.author.name}" not in voice chat channel. Please join one and try again',
-                                     delete_after=self.delete_after)
+                                                delete_after=self.delete_after)
             return None
 
         if not check_voice_chats:
@@ -1071,7 +1122,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not vc:
             await ctx.invoke(self.connect_)
 
-        player = self.get_player(ctx)
+        player = self.get_player(ctx, vc.channel)
 
         if player.play_queue.full():
             return await retry_discord_message_command(ctx.send, 'Queue is full, cannot add more songs',
@@ -1128,7 +1179,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await retry_discord_message_command(ctx.send, 'I am not currently playing anything',
                                             delete_after=self.delete_after)
 
-        player = self.get_player(ctx)
+        player = self.get_player(ctx, vc.channel)
         if player.play_queue.empty():
             return await retry_discord_message_command(ctx.send, 'There are currently no more queued songs.',
                                             delete_after=self.delete_after)
@@ -1155,10 +1206,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await retry_discord_message_command(ctx.send, 'I am not currently playing anything',
                                             delete_after=self.delete_after)
 
-        player = self.get_player(ctx)
+        player = self.get_player(ctx, vc.channel)
         if player.history.empty():
             return await retry_discord_message_command(ctx.send, 'There have been no songs played.',
-                                            delete_after=self.delete_after)
+                                                       delete_after=self.delete_after)
 
         headers = [
             {
@@ -1175,7 +1226,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             },
         ]
         table = DapperTable(headers, rows_per_message=15)
-        for (count, item) in enumerate(player.history._queue): #pylint:disable=protected-access
+        table_items = deepcopy(player.history._queue) #pylint:disable=protected-access
+        for (count, item) in enumerate(table_items):
             uploader = item['uploader'] or ''
             table.add_row([
                 f'{count + 1}',
@@ -1201,7 +1253,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await retry_discord_message_command(ctx.send, 'I am not currently playing anything',
                                             delete_after=self.delete_after)
 
-        player = self.get_player(ctx)
+        player = self.get_player(ctx, vc.channel)
         if player.play_queue.empty():
             return await retry_discord_message_command(ctx.send, 'There are currently no more queued songs.',
                                             delete_after=self.delete_after)
@@ -1227,7 +1279,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await retry_discord_message_command(ctx.send, 'I am not currently connected to voice',
                                             delete_after=self.delete_after)
 
-        player = self.get_player(ctx)
+        player = self.get_player(ctx, vc.channel)
         if player.play_queue.empty():
             return await retry_discord_message_command(ctx.send, 'There are currently no more queued songs.',
                                             delete_after=self.delete_after)
@@ -1244,7 +1296,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                             delete_after=self.delete_after)
         await retry_discord_message_command(ctx.send, f'Removed item {item["title"]} from queue',
                                  delete_after=self.delete_after)
-        remove_file_path(item['file_path'])
+        if item['file_path'].exists():
+            item['file_path'].unlink()
         await player.update_queue_strings()
 
     @commands.command(name='bump')
@@ -1265,7 +1318,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await retry_discord_message_command(ctx.send, 'I am not currently connected to voice',
                                             delete_after=self.delete_after)
 
-        player = self.get_player(ctx)
+        player = self.get_player(ctx, vc.channel)
         if player.play_queue.empty():
             return await retry_discord_message_command(ctx.send, 'There are currently no more queued songs.',
                                             delete_after=self.delete_after)
@@ -1473,7 +1526,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not vc:
             await ctx.invoke(self.connect_)
 
-        player = self.get_player(ctx)
+        player = self.get_player(ctx, vc.channel)
 
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
@@ -1738,8 +1791,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not playlist:
             return None
 
-        player = self.get_player(ctx)
-
+        try:
+            player = self.players[ctx.guild.id]
+        except KeyError:
+            return await retry_discord_message_command(ctx.send, 'No player connected, no queue to save',
+                                                       delete_after=self.delete_after)
         # Do a deepcopy here so list doesn't mutate as we iterate
         if is_history:
             queue_copy = deepcopy(player.history._queue) #pylint:disable=protected-access
@@ -1829,7 +1885,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         vc = ctx.voice_client
         if not vc:
             await ctx.invoke(self.connect_)
-        player = self.get_player(ctx)
+        player = self.get_player(ctx, vc.channel)
 
         self.logger.info(f'Playlist queue called for playlist "{playlist.name}" in server "{ctx.guild.id}"')
         query = self.db_session.query(PlaylistItem).\
@@ -1904,7 +1960,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not vc:
             await ctx.invoke(self.connect_)
 
-        player = self.get_player(ctx)
+        player = self.get_player(ctx, vc.channel)
 
         self.logger.info(f'Playlist cleanup called on index "{playlist_index}" in server "{ctx.guild.id}"')
         playlist = await self.__get_playlist(playlist_index, ctx)
