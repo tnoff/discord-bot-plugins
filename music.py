@@ -857,7 +857,7 @@ class MusicPlayer:
                 self.logger.info(f'No voice client found, disconnecting from guild {self.guild.name}')
                 return await self.destroy(self.guild)
             self.logger.info(f'Music bot now playing "{source_dict["title"]}" requested '
-                             f'by "{source_dict["requester"]}" in guild "{self.guild.name}", url '
+                             f'by "{source_dict["requester"]}" in guild {self.guild.id}, url '
                              f'"{source_dict["webpage_url"]}"')
             message = f'Now playing {source_dict["webpage_url"]} requested by {source_dict["requester"]}'
             delete_messages = await self.__reset_now_playing_message(message)
