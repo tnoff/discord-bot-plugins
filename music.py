@@ -366,18 +366,17 @@ class SourceFile():
     '''
     Source file of downloaded content
     '''
-    def __init__(self, ytdl_data, source_dict, logger, enable_audio_processing):
+    def __init__(self, file_path, ytdl_data, source_dict, logger, enable_audio_processing):
         '''
         Init source file
 
-        ytdl_data                   :   youtuble-dlp data dict
+        file_path                   :   Path to ytdl file
+        ytdl_dat                    :   Ytdl download dict
         source_dict                 :   Source dict passed to yt-dlp
         logger                      :   Python logger
         enable_audio_processing     :   Run processing functions after download
         '''
         self.logger = logger
-        file_path = Path(self.ytdl.prepare_filename(ytdl_data))
-        self.logger.info(f'Downloaded url "{ytdl_data["webpage_url"]}" to file "{str(file_path)}"')
         # Keep only keys we want, has alot of metadata we dont care about
         self._new_dict = {}
         for key in YT_DLP_KEYS:
@@ -402,13 +401,13 @@ class SourceFile():
                 self._new_dict['file_path'] = edited_path
                 uuid_path.unlink()
 
-    def __getattr__(self, key):
+    def __getitem__(self, key):
         '''
         Get attribute of dict
         '''
         return self._new_dict[key]
 
-    def __setattr__(self, key, value):
+    def __setitem__(self, key, value):
         '''
         Set attributes of dict
         '''
@@ -482,7 +481,9 @@ class DownloadClient():
         except KeyError:
             pass
 
-        return SourceFile(data, source_dict, self.logger, self.enable_audio_processing)
+        file_path = Path(self.ytdl.prepare_filename(data))
+        self.logger.info(f'Downloaded url "{data["webpage_url"]}" to file "{str(file_path)}"')
+        return SourceFile(file_path, data, source_dict, self.logger, self.enable_audio_processing)
 
     async def create_source(self, source_dict, loop, download=False):
         '''
