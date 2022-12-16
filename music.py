@@ -862,7 +862,6 @@ class MusicPlayer:
             message = f'Now playing {source_dict["webpage_url"]} requested by {source_dict["requester"]}'
             delete_messages = await self.__reset_now_playing_message(message)
 
-            await sleep(1)
             await self.update_queue_strings(delete_messages=delete_messages)
 
             await self.next.wait()
