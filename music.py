@@ -16,6 +16,7 @@ from discord import FFmpegPCMAudio
 from discord.errors import HTTPException, NotFound
 from discord.ext import commands
 from moviepy.editor import AudioFileClip, afx
+from numpy import sqrt
 from requests import get as requests_get
 from requests import post as requests_post
 from sqlalchemy import desc
@@ -431,18 +432,29 @@ class SourceFile():
         '''
         finished_path = self.get_finished_path()
         editing_path = self.get_editing_path()
-        try:
-            self.logger.info(f'Editing audio in file {str(self.file_path)}')
-            edited_audio = AudioFileClip(str(self.file_path)).fx(afx.audio_normalize) #pylint:disable=no-member
-            edited_audio.write_audiofile(str(editing_path))
-            editing_path.rename(finished_path)
-            return finished_path
-        except OSError:
-            if editing_path.exists():
-                editing_path.unlink()
-            if finished_path.exists():
-                editing_path.unlink()
-            return self.file_path
+        self.logger.info(f'Editing audio in file {str(self.file_path)}')
+        audio_clip = AudioFileClip(str(self.file_path))
+        # Find dead audio at start and end of file
+        cut = lambda i: audio_clip.subclip(i, i+1).to_soundarray(fps=1)
+        volume = lambda array: sqrt(((1.0 * array) ** 2).mean())
+        volumes = [volume(cut(i)) for i in range(0, int(audio_clip.duration-1))]
+        start = 0
+        while True:
+            if volumes[start] > 0:
+                break
+            start += 1
+        end = len(volumes) - 1
+        while True:
+            if volumes[end] > 0:
+                break
+            end -= 1
+        self.logger.info(f'Found start {start} and {end} of audio file {str(self.file_path)}')
+        audio_clip = audio_clip.subclip(t_start=start, t_end=end)
+        # Normalize audio
+        edited_audio = audio_clip.fx(afx.audio_normalize) #pylint:disable=no-member
+        edited_audio.write_audiofile(str(editing_path))
+        editing_path.rename(finished_path)
+        return finished_path
 
 #
 # YTDL Download Client
