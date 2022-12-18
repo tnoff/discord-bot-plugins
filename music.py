@@ -1143,6 +1143,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         if not vc:
             await ctx.invoke(self.connect_)
+            vc = ctx.voice_client
 
         player = self.get_player(ctx, vc.channel)
 
@@ -1547,6 +1548,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         if not vc:
             await ctx.invoke(self.connect_)
+            vc = ctx.voice_client
 
         player = self.get_player(ctx, vc.channel)
 
@@ -1907,6 +1909,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         vc = ctx.voice_client
         if not vc:
             await ctx.invoke(self.connect_)
+            vc = ctx.voice_client
         player = self.get_player(ctx, vc.channel)
 
         self.logger.info(f'Playlist queue called for playlist "{playlist.name}" in server "{ctx.guild.id}"')
@@ -1981,6 +1984,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         if not vc:
             await ctx.invoke(self.connect_)
+            vc = ctx.voice_client
 
         player = self.get_player(ctx, vc.channel)
 
