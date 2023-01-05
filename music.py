@@ -13,7 +13,7 @@ from uuid import uuid4
 from async_timeout import timeout
 from dappertable import shorten_string_cjk, DapperTable
 from discord import FFmpegPCMAudio
-from discord.errors import HTTPException, NotFound
+from discord.errors import HTTPException
 from discord.ext import commands
 from moviepy.editor import AudioFileClip, afx
 from numpy import sqrt
@@ -640,10 +640,6 @@ class MusicPlayer:
         self._player_task = self.bot.loop.create_task(self.player_loop())
         self._download_task = self.bot.loop.create_task(self.download_files())
 
-    def __exit__(self, *args, **kwargs):
-        if self.lock_file.exists():
-            self.lock_file.unlink()
-
     async def acquire_lock(self, wait_timeout=600):
         '''
         Wait for and acquire lock
@@ -912,6 +908,8 @@ class MusicPlayer:
             self._player_task.cancel()
         if self._download_task:
             self._download_task.cancel()
+        if self.lock_file.exists():
+            self.lock_file.unlink()
         return history_items
 
     async def destroy(self, guild):
@@ -957,6 +955,16 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         else:
             self.download_dir = Path(TemporaryDirectory().name) #pylint:disable=consider-using-with
 
+    async def cog_unload(self):
+        '''
+        Run when cog stops
+        '''
+        guild_list = list(self.players.keys())
+        for guild in guild_list:
+            await self.cleanup(guild)
+        if self.download_dir.exists():
+            rm_tree(self.download_dir)
+
     async def __check_database_session(self, ctx):
         '''
         Check if database session is in use
@@ -979,12 +987,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             player = self.players[guild.id]
         except KeyError:
             return
-
-        try:
-            if player.np:
-                await retry_discord_message_command(player.np.delete)
-        except NotFound:
-            pass
 
         if player.current_path and player.current_path.exists():
             player.current_path.unlink()
