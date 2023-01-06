@@ -161,11 +161,11 @@ class Markov(CogHelper):
                 # Start at the beginning of channel history,
                 # slowly make your way make to current day
                 if not markov_channel.last_message_id:
-                    messages = await channel.history(limit=16, after=retention_cutoff, oldest_first=True).flatten()
+                    messages = [m async for m in channel.history(limit=16, after=retention_cutoff, oldest_first=True)]
                 else:
                     try:
                         last_message = await channel.fetch_message(markov_channel.last_message_id)
-                        messages = await channel.history(after=last_message, limit=128).flatten()
+                        messages = [m async for m in channel.history(after=last_message, limit=128)]
                     except NotFound:
                         self.logger.error(f'Unable to find message {markov_channel.last_message_id}'
                                           f' in channel {markov_channel.id}')
