@@ -395,6 +395,7 @@ class SourceFile():
         except KeyError:
             self._new_dict['added_from_history'] = False
 
+        self.file_path = None
         if file_path:
             # The modified time of download videos can be the time when it was actually uploaded to youtube
             # Touch here to update the modified time, so that the cleanup check works as intendend
@@ -514,6 +515,7 @@ class DownloadClient():
         except KeyError:
             pass
 
+        file_path = None
         if download:
             file_path = Path(self.ytdl.prepare_filename(data))
             self.logger.info(f'Downloaded url "{data["webpage_url"]}" to file "{str(file_path)}"')
