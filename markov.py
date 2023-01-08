@@ -107,6 +107,8 @@ class Markov(CogHelper):
     async def cog_unload(self):
         if self._task:
             self._task.cancel()
+        if self.lock_file.exists():
+            self.lock_file.unlink()
 
     def __ensure_word(self, word):
         if len(word) >= MAX_WORD_LENGTH:
