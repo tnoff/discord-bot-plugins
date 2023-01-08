@@ -165,7 +165,7 @@ class Markov(CogHelper):
                 else:
                     try:
                         last_message = await channel.fetch_message(markov_channel.last_message_id)
-                        messages = [m async for m in channel.history(after=last_message, limit=128)]
+                        messages = [m async for m in channel.history(after=last_message, limit=16)]
                     except NotFound:
                         self.logger.error(f'Unable to find message {markov_channel.last_message_id}'
                                           f' in channel {markov_channel.id}')
@@ -181,18 +181,13 @@ class Markov(CogHelper):
                     self.logger.debug(f'No new messages for channel {markov_channel.channel_id}')
                     continue
 
+
                 for message in messages:
                     self.logger.debug(f'Gathering message {message.id} '
                                       f'for channel {markov_channel.channel_id}')
                     add_message = True
-                    # Skip messages older than retention date
-                    if message.created_at < retention_cutoff:
-                        self.logger.warning(f'Message {message.id} too old for channel, skipping')
+                    if not message.content or message.author.bot:
                         add_message = False
-                    # If no content continue or from a bot skip
-                    elif not message.content or message.author.bot:
-                        add_message = False
-                    # If message begins with '!', assume it was a bot command
                     elif message.content[0] == '!':
                         add_message = False
                     corpus = None
@@ -296,6 +291,7 @@ class Markov(CogHelper):
         return await self.retry_command(self.__speak, ctx, first_word, sentence_length, non_db_exceptions=(HTTPException))
 
     async def __speak(self, ctx, first_word, sentence_length):
+        self.logger.info(f'Calling speak on server {ctx.guild.id}')
         all_words = []
         first = None
         if first_word:
