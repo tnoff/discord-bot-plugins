@@ -1269,7 +1269,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             },
             {
                 'name': 'Title',
-                'length': 48,
+                'length': 64,
             },
             {
                 'name': 'Uploader',
@@ -1506,11 +1506,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             },
             {
                 'name': 'Playlist Name',
-                'length': 32,
+                'length': 64,
             },
             {
                 'name': 'Last Queued',
-                'length': 17,
+                'length': 20,
             }
         ]
         table = DapperTable(headers, rows_per_message=15)
@@ -1647,7 +1647,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             },
             {
                 'name': 'Title',
-                'length': 48,
+                'length': 64,
             },
         ]
         table = DapperTable(headers, rows_per_message=15)
@@ -1736,7 +1736,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             },
             {
                 'name': 'Title',
-                'length': 48,
+                'length': 64,
             },
             {
                 'name': 'Uploader',
