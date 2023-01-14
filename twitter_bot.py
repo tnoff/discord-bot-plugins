@@ -260,7 +260,7 @@ class Twitter(CogHelper):
                 user = self.twitter_api.GetUser(user_id=subs.twitter_user_id)
                 screen_names.append(user.screen_name)
             except (TwitterError, requests_connection_error) as error:
-                self.logger.exception(f'Exception getting user: {error}')
+                self.logger.exception(f'Exception getting user {subs.twitter_user_id}: {error}')
                 self._restart_client()
                 return await ctx.send('Error getting twitter names')
         message = '\n'.join(name for name in screen_names)
