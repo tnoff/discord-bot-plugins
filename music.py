@@ -51,10 +51,7 @@ REQUESTS_TIMEOUT = 180
 DEFAULT_RANDOM_QUEUE_LENGTH = 32
 
 # Timeout in seconds
-DISCONNECT_TIMEOUT = 60 * 15
-
-# Video download/processing timeout
-VIDEO_DOWNLOAD_TIMEOUT = 60
+DISCONNECT_TIMEOUT_DEFAULT = 60 * 15
 
 # Spotify
 SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/api/token'
@@ -624,7 +621,7 @@ class MusicPlayer:
     '''
 
     def __init__(self, bot, guild, cog_cleanup, text_channel, voice_channel, logger,
-                 download_client, max_song_length, queue_max_size, delete_after, history_playlist_id):
+                 download_client, max_song_length, queue_max_size, delete_after, history_playlist_id, disconnect_timeout):
         self.bot = bot
         self.logger = logger
         self.guild = guild
@@ -634,6 +631,7 @@ class MusicPlayer:
         self.download_client = download_client
         self.delete_after = delete_after
         self.history_playlist_id = history_playlist_id
+        self.disconnect_timeout = disconnect_timeout
 
         self.logger.info(f'Max length for music queue in guild {self.guild.name} is {queue_max_size}')
         self.download_queue = MyQueue(maxsize=queue_max_size)
@@ -646,7 +644,6 @@ class MusicPlayer:
         self.volume = 0.5
         self.max_song_length = max_song_length
         self.current_path = None
-        self.member_last_seen = None # Last time a member was in the voice channel
 
         # For showing messages
         self.lock_file = Path(NamedTemporaryFile(delete=False).name) #pylint:disable=consider-using-with
@@ -787,13 +784,7 @@ class MusicPlayer:
             source_dict = await self.download_queue.get()
 
             try:
-                async with timeout(VIDEO_DOWNLOAD_TIMEOUT):
-                    source_download = await self.download_client.create_source(source_dict, self.bot.loop, download=True)
-            except asyncio_timeout:
-                await retry_discord_message_command(source_dict['message'].edit, content=f'Issue downloading video "{source_dict["search_string"]}", skipping',
-                                                    delete_after=self.delete_after)
-                await sleep(1)
-                continue
+                source_download = await self.download_client.create_source(source_dict, self.bot.loop, download=True)
             except SongTooLong:
                 await retry_discord_message_command(source_dict['message'].edit, content=f'Search "{source_dict["search_string"]}" exceeds maximum of {self.max_song_length} seconds, skipping',
                                                     delete_after=self.delete_after)
@@ -840,21 +831,11 @@ class MusicPlayer:
 
             try:
                 # Wait for the next song. If we timeout cancel the player and disconnect...
-                async with timeout(DISCONNECT_TIMEOUT):
+                async with timeout(self.disconnect_timeout):
                     source_dict = await self.play_queue.get()
             except asyncio_timeout:
                 self.logger.info(f'Music bot reached timeout on queue in guild "{self.guild.name}"')
                 return await self.destroy(self.guild)
-
-            # Check if anyone currently in server
-            # If no one in server for long time then we leave
-            if not self.voice_channel.members:
-                if self.member_last_seen and (datetime.utcnow() - self.member_last_seen).seconds > DISCONNECT_TIMEOUT:
-                    self.logger.info(f'Music bot reached timeout, no members in voice chat since {str(self.member_last_seen)}')
-                    return await self.destroy(self.guild)
-                self.member_last_seen = datetime.utcnow()
-            else:
-                self.member_last_seen = None
 
             self.current_path = source_dict['file_path']
 
@@ -969,6 +950,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.queue_max_size = settings.get('music_queue_max_size', QUEUE_MAX_SIZE_DEFAULT)
         self.server_playlist_max = settings.get('music_server_playlist_max', SERVER_PLAYLIST_MAX_DEFAULT)
         self.max_song_length = settings.get('music_max_song_length', MAX_SONG_LENGTH_DEFAULT)
+        self.disconnect_timeout = settings.get('music_disconnect_timeout', DISCONNECT_TIMEOUT_DEFAULT)
         self.download_dir = settings.get('music_download_dir', None)
         self.enable_audio_processing = settings.get('music_enable_audio_processing', False)
         spotify_client_id = settings.get('music_spotify_client_id', None)
@@ -1096,7 +1078,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             # Generate and start player
             player = MusicPlayer(ctx.bot, ctx.guild, ctx.cog.cleanup, ctx.channel, voice_channel,
                                  self.logger, self.download_client, self.max_song_length,
-                                 self.queue_max_size, self.delete_after, history_playlist_id)
+                                 self.queue_max_size, self.delete_after, history_playlist_id, self.disconnect_timeout)
             await player.start()
             self.players[ctx.guild.id] = player
 
