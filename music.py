@@ -6,6 +6,7 @@ from functools import partial
 from pathlib import Path
 from random import shuffle as random_shuffle
 from re import match as re_match
+from shutil import copy as copy_file
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Optional
 from uuid import uuid4
@@ -448,7 +449,7 @@ class SourceFile():
             # Touch here to update the modified time, so that the cleanup check works as intendend
             # Rename file to a random uuid name, that way we can have diff videos with same/similar names
             uuid_path = file_path.parent / f'{source_dict["guild_id"]}' / f'{uuid4()}{".".join(i for i in file_path.suffixes)}'
-            file_path.rename(uuid_path)
+            copy_file(str(file_path), str(uuid_path))
             self.file_path = uuid_path
             self.logger.info(f'Moved downloaded url "{self._new_dict["webpage_url"]}" to file "{uuid_path}"')
             self._new_dict['file_path'] = uuid_path
