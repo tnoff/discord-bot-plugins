@@ -1040,9 +1040,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 except PlaylistMaxLength:
                     # Sql alchemy wont let you call delete directly with a limit
                     # So grab the id here
-                    deleted_item = self.db_session.query(PlaylistItem).\
+                    deleted_item = [i for i in self.db_session.query(PlaylistItem).\
                                     filter(PlaylistItem.playlist_id == playlist.id).\
-                                    order_by(desc(PlaylistItem.created_at)).one()
+                                    order_by(desc(PlaylistItem.created_at)).limit(1)][0]
                     if deleted_item:
                         self.db_session.query(PlaylistItem).filter(PlaylistItem.id == deleted_item.id).delete()
                     self.__playlist_add_item(guild.id, playlist, item['id'], item['title'], item['uploader'])
