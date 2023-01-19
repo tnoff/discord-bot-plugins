@@ -3,6 +3,8 @@ from asyncio import Event, Queue, QueueEmpty, QueueFull, TimeoutError as asyncio
 from copy import deepcopy
 from datetime import datetime, timedelta
 from functools import partial
+from json import load as json_load
+from json import dumps as json_dumps
 from pathlib import Path
 from random import shuffle as random_shuffle
 from re import match as re_match
@@ -34,6 +36,9 @@ from discord_bot.database import BASE
 # Max title length for table views
 MAX_STRING_LENGTH = 32
 
+# Format for local cache file datetime
+CACHE_DATETIME_FORMAT = '%Y-%m-%dT%H:%M:%S'
+
 # Music defaults
 DELETE_AFTER_DEFAULT = 300
 
@@ -54,6 +59,10 @@ DEFAULT_RANDOM_QUEUE_LENGTH = 32
 
 # Timeout in seconds
 DISCONNECT_TIMEOUT_DEFAULT = 60 * 15
+
+# Max cache files to keep on disk
+# NOTE: If you enable audio processing this keeps double the files as one gets edited
+MAX_CACHE_FILES_DEFAULT = 2048
 
 # Spotify
 SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/api/token'
@@ -93,13 +102,13 @@ def edit_audio_file(file_path):
         '''
         Get 'editing path' for editing files
         '''
-        return path.parent / (path.stem + 'finished.mp3')
+        return path.parent / (path.stem + '.finished.mp3')
 
     def get_editing_path(path):
         '''
         Get 'editing path' for editing files
         '''
-        return path.parent / (path.stem + 'edited.mp3')
+        return path.parent / (path.stem + '.edited.mp3')
 
     finished_path = get_finished_path(file_path)
     # If exists, assume it was already edited successfully
@@ -164,6 +173,15 @@ async def retry_discord_message_command(func, *args, **kwargs):
                 sleep(sleep_for)
                 continue
             raise
+
+def json_converter(o): #pylint:disable=inconsistent-return-statements
+    '''
+    Convert json objects to proper strings for writing
+    '''
+    if isinstance(o, datetime):
+        return o.strftime(CACHE_DATETIME_FORMAT)
+    if isinstance(o, Path):
+        return str(o)
 
 #
 # Music Tables
@@ -443,21 +461,25 @@ class SourceFile():
         except KeyError:
             self._new_dict['added_from_history'] = False
 
-        self.file_path = None
-        if file_path:
+        self.file_path = file_path
+        self.original_path = file_path
+        if self.file_path:
             # The modified time of download videos can be the time when it was actually uploaded to youtube
             # Touch here to update the modified time, so that the cleanup check works as intendend
             # Rename file to a random uuid name, that way we can have diff videos with same/similar names
-            uuid_path = file_path.parent / f'{source_dict["guild_id"]}' / f'{uuid4()}{".".join(i for i in file_path.suffixes)}'
+            uuid_path = file_path.parent / f'{source_dict["guild_id"]}' / f'{uuid4()}{"".join(i for i in file_path.suffixes)}'
             copy_file(str(file_path), str(uuid_path))
             self.file_path = uuid_path
             self.logger.info(f'Moved downloaded url "{self._new_dict["webpage_url"]}" to file "{uuid_path}"')
-            self._new_dict['file_path'] = uuid_path
 
     def __getitem__(self, key):
         '''
         Get attribute of dict
         '''
+        if key == 'file_path':
+            return self.file_path
+        if key == 'original_path':
+            return self.original_path
         return self._new_dict[key]
 
     def __setitem__(self, key, value):
@@ -492,6 +514,99 @@ class VideoEditing(PostProcessor):
         information['_filename'] = str(file_path)
         information['filepath'] = str(file_path)
         return [], information
+
+#
+# Local Cache
+#
+
+class CacheFile():
+    '''
+    Keep cache of local files
+    '''
+    def __init__(self, cache_file, max_cache_files, logger):
+        '''
+        Create new file cache
+        cache_file      :       Local cache json
+        max_cache_files :       Maximum number of files to keep in cache
+        logger          :       Python logger
+        '''
+        self._data = []
+        self._file = cache_file
+        self.max_cache_files = max_cache_files
+        self.logger = logger
+        if self._file.exists():
+            with open(str(self._file), 'r') as o:
+                self._data = json_load(o)
+
+        # Check all files exist
+        new_list = []
+        for item in self._data:
+            item['file_path'] = Path(item['file_path'])
+            if not item['file_path'].exists():
+                self.logger.warning(f'Cached file {str(item["file_path"])} does not exist, skipping')
+                continue
+            item['last_iterated_at'] = datetime.strptime(item['last_iterated_at'], CACHE_DATETIME_FORMAT)
+            item['created_at'] = datetime.strptime(item['created_at'], CACHE_DATETIME_FORMAT)
+            new_list.append(item)
+        self._data = new_list
+        self.logger.info(f'Cache starting with data {self._data}')
+
+    def iterate_file(self, file_path):
+        '''
+        Bump file path
+        file_path       :   Path of cached file
+        '''
+        self.logger.info(f'Adding file path {str(file_path)} to cache file')
+        for item in self._data:
+            if item['file_path'] == file_path:
+                item['count'] += 1
+                item['last_iterated_at'] = datetime.utcnow()
+                self.logger.info('Cache entry existed, bumping')
+                return
+        now = datetime.utcnow()
+        self.logger.info('Cache entry did not exist, creating now')
+        self._data.append({
+            'file_path': file_path,
+            'count': 1,
+            'last_iterated_at': now,
+            'created_at': now,
+        })
+
+    def remove(self):
+        '''
+        Remove oldest and least used file from cache
+        '''
+        self.logger.info('Checking for cache files to remove')
+        num_to_remove = len(self._data) - self.max_cache_files
+        if num_to_remove < 1:
+            self.logger.info('Less cached files than maximum, exiting')
+            return
+        self.logger.info(f'Need to remove {num_to_remove} cached files')
+        sorted_list = sorted(self._data, key=lambda k: (float(k['count']), k['last_iterated_at']), reverse=False)
+        removed = 0
+        remove_files = []
+
+        new_list = []
+        for item in sorted_list:
+            if removed < num_to_remove:
+                remove_files.append(item)
+                removed += 1
+                continue
+            new_list.append(item)
+
+        for item in remove_files:
+            self.logger.info(f'Removing item from cache {item}')
+            if item['file_path'].exists():
+                item['file_path'].unlink()
+        self._data = new_list
+
+    def write_file(self):
+        '''
+        Write to local file
+        '''
+        self._file.write_text(json_dumps(self._data, default=json_converter))
+
+
 #
 # YTDL Download Client
 #
@@ -640,7 +755,7 @@ class MusicPlayer:
     '''
 
     def __init__(self, bot, guild, cog_cleanup, text_channel, voice_channel, logger,
-                 download_client, max_song_length, queue_max_size, delete_after, history_playlist_id, disconnect_timeout):
+                 download_client, cache_file, max_song_length, queue_max_size, delete_after, history_playlist_id, disconnect_timeout):
         self.bot = bot
         self.logger = logger
         self.guild = guild
@@ -648,11 +763,11 @@ class MusicPlayer:
         self.voice_channel = voice_channel
         self.cog_cleanup = cog_cleanup
         self.download_client = download_client
+        self.cache_file = cache_file
         self.delete_after = delete_after
         self.history_playlist_id = history_playlist_id
         self.disconnect_timeout = disconnect_timeout
 
-        self.logger.info(f'Max length for music queue in guild {self.guild.name} is {queue_max_size}')
         self.download_queue = MyQueue(maxsize=queue_max_size)
         self.play_queue = MyQueue(maxsize=queue_max_size)
         self.history = MyQueue(maxsize=queue_max_size)
@@ -834,6 +949,13 @@ class MusicPlayer:
             await self.update_queue_strings()
             # Delete message if nothing went wrong here
             await retry_discord_message_command(source_dict['message'].delete)
+            # Iterate on cache file if exists
+            if self.cache_file:
+                self.logger.info(f'Iterating file on original path {str(source_download["original_path"])}')
+                self.cache_file.iterate_file(source_download['original_path'])
+                self.logger.info('Checking cache files to remove')
+                self.cache_file.remove()
+                self.cache_file.write_file()
             await sleep(1)
 
     def set_next(self, *_args, **_kwargs):
@@ -975,6 +1097,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.disconnect_timeout = settings.get('music_disconnect_timeout', DISCONNECT_TIMEOUT_DEFAULT)
         self.download_dir = settings.get('music_download_dir', None)
         self.enable_audio_processing = settings.get('music_enable_audio_processing', False)
+        self.enable_cache = settings.get('music_enable_cache_files', False)
+        self.max_cache_files = settings.get('music_max_cache_files', MAX_CACHE_FILES_DEFAULT)
         spotify_client_id = settings.get('music_spotify_client_id', None)
         spotify_client_secret = settings.get('music_spotify_client_secret', None)
         youtube_api_key = settings.get('music_youtube_api_key', None)
@@ -992,6 +1116,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 self.download_dir.mkdir(exist_ok=True, parents=True)
         else:
             self.download_dir = Path(TemporaryDirectory().name) #pylint:disable=consider-using-with
+
+        self.cache_file = None
+        if self.enable_cache:
+            self.cache_file = CacheFile(self.download_dir / 'cache.json', self.max_cache_files, self.logger)
 
         ytdlopts = {
             'format': 'bestaudio',
@@ -1021,7 +1149,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         guild_list = list(self.players.keys())
         for guild in guild_list:
             await self.cleanup(guild)
-        if self.download_dir.exists():
+        # Only remove download dir if cache not enabled
+        if self.download_dir.exists() and not self.enable_cache:
             rm_tree(self.download_dir)
 
     async def __check_database_session(self, ctx):
@@ -1105,7 +1234,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 history_playlist_id = history_playlist.id
             # Generate and start player
             player = MusicPlayer(ctx.bot, ctx.guild, ctx.cog.cleanup, ctx.channel, voice_channel,
-                                 self.logger, self.download_client, self.max_song_length,
+                                 self.logger, self.download_client, self.cache_file, self.max_song_length,
                                  self.queue_max_size, self.delete_after, history_playlist_id, self.disconnect_timeout)
             await player.start()
             self.players[ctx.guild.id] = player
