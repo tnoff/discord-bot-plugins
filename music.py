@@ -24,6 +24,7 @@ from sqlalchemy import Boolean, Column, DateTime, Integer, String
 from sqlalchemy import ForeignKey, UniqueConstraint
 from sqlalchemy.exc import IntegrityError
 from yt_dlp import YoutubeDL
+from yt_dlp.postprocessor import PostProcessor
 from yt_dlp.utils import DownloadError
 
 from discord_bot.cogs.common import CogHelper
@@ -81,6 +82,56 @@ def max_song_filter_generator(max_song_length):
         if duration and duration > max_song_length:
             raise SongTooLong(f'Song exceeds max length of {max_song_length}')
     return max_song_filter
+
+
+def edit_audio_file(file_path):
+    '''
+    Normalize audio for file
+    '''
+    def get_finished_path(path):
+        '''
+        Get 'editing path' for editing files
+        '''
+        return path.parent / (path.stem + 'finished.mp3')
+
+    def get_editing_path(path):
+        '''
+        Get 'editing path' for editing files
+        '''
+        return path.parent / (path.stem + 'edited.mp3')
+
+    finished_path = get_finished_path(file_path)
+    # If exists, assume it was already edited successfully
+    if finished_path.exists():
+        return finished_path
+    editing_path = get_editing_path(file_path)
+    audio_clip = AudioFileClip(str(file_path))
+    # Find dead audio at start and end of file
+    cut = lambda i: audio_clip.subclip(i, i+1).to_soundarray(fps=1)
+    volume = lambda array: sqrt(((1.0 * array) ** 2).mean())
+    volumes = [volume(cut(i)) for i in range(0, int(audio_clip.duration-1))]
+    start = 0
+    while True:
+        if volumes[start] > 0:
+            break
+        start += 1
+    end = len(volumes) - 1
+    while True:
+        if volumes[end] > 0:
+            break
+        end -= 1
+    # From testing, it seems good to give this a little bit of a buffer, add 1 second to each end if possible
+    if start > 0:
+        start -= 1
+    if end < audio_clip.duration - 1:
+        end += 1
+    audio_clip = audio_clip.subclip(t_start=start, t_end=end + 1)
+    # Normalize audio
+    edited_audio = audio_clip.fx(afx.audio_normalize) #pylint:disable=no-member
+    edited_audio.write_audiofile(str(editing_path))
+    editing_path.rename(finished_path)
+    return finished_path
+
 
 def rm_tree(pth):
     '''
@@ -366,7 +417,7 @@ class SourceFile():
     '''
     Source file of downloaded content
     '''
-    def __init__(self, file_path, ytdl_data, source_dict, logger, enable_audio_processing):
+    def __init__(self, file_path, ytdl_data, source_dict, logger):
         '''
         Init source file
 
@@ -374,7 +425,6 @@ class SourceFile():
         ytdl_data                   :   Ytdl download dict
         source_dict                 :   Source dict passed to yt-dlp
         logger                      :   Python logger
-        enable_audio_processing     :   Run processing functions after download
         '''
         self.logger = logger
         # Keep only keys we want, has alot of metadata we dont care about
@@ -402,12 +452,6 @@ class SourceFile():
             self.file_path = uuid_path
             self.logger.info(f'Moved downloaded url "{self._new_dict["webpage_url"]}" to file "{uuid_path}"')
             self._new_dict['file_path'] = uuid_path
-            if enable_audio_processing:
-                edited_path = self.edit_audio_file()
-                if edited_path:
-                    self._new_dict['file_path'] = edited_path
-                    uuid_path.unlink()
-                    self.file_path = edited_path
 
     def __getitem__(self, key):
         '''
@@ -428,53 +472,25 @@ class SourceFile():
         if self.file_path.exists():
             self.file_path.unlink()
 
-    def get_finished_path(self):
-        '''
-        Get 'finished path' for edited file
-        '''
-        return self.file_path.parent / (self.file_path.stem + '.finished.mp3')
+#
+# YTDL Post Processor
+#
 
-    def get_editing_path(self):
-        '''
-        Get 'editing path' for editing files
-        '''
-        return self.file_path.parent / (self.file_path.stem + '.edited.mp3')
 
-    def edit_audio_file(self):
+class VideoEditing(PostProcessor):
+    '''
+    Run post processing on downloaded videos
+    '''
+    def run(self, information):
         '''
-        Normalize audio for file
+        Run post processing editing
+        Get filename, edit with moviepy, and update dict
         '''
-        finished_path = self.get_finished_path()
-        editing_path = self.get_editing_path()
-        self.logger.info(f'Editing audio in file {str(self.file_path)}')
-        audio_clip = AudioFileClip(str(self.file_path))
-        # Find dead audio at start and end of file
-        cut = lambda i: audio_clip.subclip(i, i+1).to_soundarray(fps=1)
-        volume = lambda array: sqrt(((1.0 * array) ** 2).mean())
-        volumes = [volume(cut(i)) for i in range(0, int(audio_clip.duration-1))]
-        start = 0
-        while True:
-            if volumes[start] > 0:
-                break
-            start += 1
-        end = len(volumes) - 1
-        while True:
-            if volumes[end] > 0:
-                break
-            end -= 1
-        # From testing, it seems good to give this a little bit of a buffer, add 1 second to each end if possible
-        if start > 0:
-            start -= 1
-        if end < audio_clip.duration - 1:
-            end += 1
-        self.logger.info(f'Found start {start} and {end} of audio file {str(self.file_path)}')
-        audio_clip = audio_clip.subclip(t_start=start, t_end=end + 1)
-        # Normalize audio
-        edited_audio = audio_clip.fx(afx.audio_normalize) #pylint:disable=no-member
-        edited_audio.write_audiofile(str(editing_path))
-        editing_path.rename(finished_path)
-        return finished_path
-
+        file_path = Path(information['_filename'])
+        file_path = edit_audio_file(file_path)
+        information['_filename'] = str(file_path)
+        information['filepath'] = str(file_path)
+        return [], information
 #
 # YTDL Download Client
 #
@@ -484,13 +500,12 @@ class DownloadClient():
     Download Client using yt-dlp
     '''
     def __init__(self, ytdl, logger, spotify_client=None, youtube_client=None,
-                 delete_after=None, enable_audio_processing=False):
+                 delete_after=None):
         self.ytdl = ytdl
         self.logger = logger
         self.spotify_client = spotify_client
         self.youtube_client = youtube_client
         self.delete_after = delete_after
-        self.enable_audio_processing = enable_audio_processing
 
     def __prepare_data_source(self, source_dict, download=True):
         '''
@@ -514,9 +529,12 @@ class DownloadClient():
 
         file_path = None
         if download:
-            file_path = Path(self.ytdl.prepare_filename(data))
-            self.logger.info(f'Downloaded url "{data["webpage_url"]}" to file "{str(file_path)}"')
-        return SourceFile(file_path, data, source_dict, self.logger, self.enable_audio_processing)
+            try:
+                file_path = Path(data['requested_downloads'][0]['filepath'])
+                self.logger.info(f'Downloaded url "{data["webpage_url"]}" to file "{str(file_path)}"')
+            except (KeyError, IndexError):
+                self.logger.error(f'Unable to get filepath from ytdl data {data}')
+        return SourceFile(file_path, data, source_dict, self.logger)
 
     async def create_source(self, source_dict, loop, download=False):
         '''
@@ -988,10 +1006,12 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         }
         if self.max_song_length:
             ytdlopts['match_filter'] = max_song_filter_generator(self.max_song_length)
-        self.download_client = DownloadClient(YoutubeDL(ytdlopts), self.logger,
+        ytdl = YoutubeDL(ytdlopts)
+        if self.enable_audio_processing:
+            ytdl.add_post_processor(VideoEditing(), when='post_process')
+        self.download_client = DownloadClient(ytdl, self.logger,
                                               spotify_client=self.spotify_client, youtube_client=self.youtube_client,
-                                              delete_after=self.delete_after,
-                                              enable_audio_processing=self.enable_audio_processing)
+                                              delete_after=self.delete_after)
 
     async def cog_unload(self):
         '''
