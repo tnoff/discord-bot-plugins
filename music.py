@@ -1639,7 +1639,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         table = DapperTable(headers, rows_per_message=15)
         for (count, item) in enumerate(items):
             table.add_row([
-                f'{count + 1}',
+                item['count'],
                 item['title'],
             ])
         messages = [f'```{t}```' for t in table.print()]
