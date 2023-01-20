@@ -765,6 +765,9 @@ class MusicPlayer:
                 queue_message = self.queue_messages.pop(-1)
                 await retry_discord_message_command(queue_message.delete)
         for (count, queue_message) in enumerate(self.queue_messages):
+            # Check if queue message is the same before updating
+            if queue_message.content == new_queue_strings[count]:
+                continue
             await retry_discord_message_command(queue_message.edit, content=new_queue_strings[count])
         if len(self.queue_messages) < len(new_queue_strings):
             for table in new_queue_strings[-(len(new_queue_strings) - len(self.queue_messages)):]:
