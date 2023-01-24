@@ -1195,7 +1195,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                     order_by(desc(PlaylistItem.created_at)).limit(1)][0]
                     if deleted_item:
                         self.db_session.query(PlaylistItem).filter(PlaylistItem.id == deleted_item.id).delete()
-                    self.__playlist_add_item(guild.id, playlist, item['id'], item['title'], item['uploader'])
+                    self.__playlist_add_item(guild.id, playlist, item['id'], item['title'], item['uploader'], ignore_fail=True)
 
         guild_path = self.download_dir / f'{guild.id}'
         if guild_path.exists():
