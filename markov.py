@@ -8,7 +8,7 @@ from typing import Optional
 
 from discord import TextChannel
 from discord.ext import commands
-from discord.errors import HTTPException, NotFound
+from discord.errors import NotFound
 from sqlalchemy import Column, DateTime, Integer, String
 from sqlalchemy import ForeignKey, UniqueConstraint
 
@@ -143,9 +143,6 @@ class Markov(CogHelper):
         '''
         Our main loop.
         '''
-        await self.retry_command(self.__main_loop, non_db_exceptions=(HTTPException))
-
-    async def __main_loop(self):
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
@@ -226,9 +223,7 @@ class Markov(CogHelper):
         '''
         if not await self.check_user_role(ctx):
             return await ctx.send('Unable to verify user role, ignoring command')
-        return await self.retry_command(self.__on, ctx, non_db_exceptions=(HTTPException))
 
-    async def __on(self, ctx):
         # Ensure channel not already on
         markov = self.db_session.query(MarkovChannel).\
             filter(MarkovChannel.channel_id == str(ctx.channel.id)).\
@@ -256,9 +251,7 @@ class Markov(CogHelper):
         '''
         if not await self.check_user_role(ctx):
             return await ctx.send('Unable to verify user role, ignoring command')
-        return await self.retry_command(self.__off, ctx, non_db_exceptions=(HTTPException))
 
-    async def __off(self, ctx):
         # Ensure channel not already on
         markov_channel = self.db_session.query(MarkovChannel).\
             filter(MarkovChannel.channel_id == str(ctx.channel.id)).\
@@ -290,9 +283,7 @@ class Markov(CogHelper):
         '''
         if not await self.check_user_role(ctx):
             return await ctx.send('Unable to verify user role, ignoring command')
-        return await self.retry_command(self.__speak, ctx, first_word, sentence_length, non_db_exceptions=(HTTPException))
 
-    async def __speak(self, ctx, first_word, sentence_length):
         self.logger.info(f'Calling speak on server {ctx.guild.id}')
         all_words = []
         first = None

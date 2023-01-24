@@ -16,7 +16,7 @@ from uuid import uuid4
 from async_timeout import timeout
 from dappertable import shorten_string_cjk, DapperTable
 from discord import FFmpegPCMAudio
-from discord.errors import HTTPException
+from discord.errors import HTTPException, DiscordServerError, RateLimited
 from discord.ext import commands
 from moviepy.editor import AudioFileClip, afx
 from numpy import sqrt
@@ -32,6 +32,7 @@ from yt_dlp.utils import DownloadError
 
 from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
+from discord_bot.utils import retry_command
 
 # Max title length for table views
 MAX_STRING_LENGTH = 32
@@ -159,20 +160,12 @@ async def retry_discord_message_command(func, *args, **kwargs):
     '''
     Retry discord send message command, catch case of rate limiting
     '''
-    max_retries = kwargs.pop('max_retries', 3)
-    retry = 0
-    while True:
-        retry += 1
-        try:
-            return await func(*args, **kwargs)
-        except HTTPException as ex:
-            if '429' not in str(ex):
-                raise
-            if retry <= max_retries:
-                sleep_for = 2 ** (retry - 1)
-                sleep(sleep_for)
-                continue
-            raise
+    def check_429(ex):
+        if '429' not in str(ex):
+            raise #pylint:disable=misplaced-bare-raise
+    post_exception_functions = [check_429]
+    exceptions = (HTTPException, RateLimited, DiscordServerError)
+    return await retry_command(func, *args, **kwargs, accepted_exceptions=exceptions, post_exception_functions=post_exception_functions)
 
 def json_converter(o): #pylint:disable=inconsistent-return-statements
     '''
@@ -1268,9 +1261,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         '''
         if not await self.check_user_role(ctx):
             return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
-        return await self.retry_command(self.__connect, ctx)
 
-    async def __connect(self, ctx):
         channel = await self.__check_author_voice_chat(ctx, check_voice_chats=False)
         vc = ctx.voice_client
 
@@ -1621,9 +1612,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         '''
         List playlists.
         '''
-        return await self.retry_command(self.__playlist_list, ctx)
 
-    async def __playlist_list(self, ctx):
         if not await self.check_user_role(ctx):
             return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
@@ -1700,7 +1689,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             The song to search and retrieve from youtube.
             This could be a simple search, an ID or URL.
         '''
-        return await self.retry_command(self.__playlist_item_add, ctx, playlist_index, search)
+        return await self.__playlist_item_add(ctx, playlist_index, search)
 
     async def __playlist_item_add(self, ctx, playlist_index, search):
         if not await self.check_user_role(ctx):
@@ -1750,9 +1739,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         search: str [Required]
             String to look for in item title
         '''
-        return await self.retry_command(self.__playlist_item_search, ctx, playlist_index, search)
-
-    async def __playlist_item_search(self, ctx, playlist_index, search):
         if not await self.check_user_role(ctx):
             return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command',
                                             delete_after=self.delete_after)
@@ -1809,9 +1795,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         song_index: integer [Required]
             ID of song to remove
         '''
-        return await self.retry_command(self.__playlist_item_remove, ctx, playlist_index, song_index)
-
-    async def __playlist_item_remove(self, ctx, playlist_index, song_index):
         if not await self.check_user_role(ctx):
             return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
@@ -1852,9 +1835,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         playlist_index: integer [Required]
             ID of playlist
         '''
-        return await self.retry_command(self.__playlist_show, ctx, playlist_index)
-
-    async def __playlist_show(self, ctx, playlist_index):
         if not await self.check_user_role(ctx):
             return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
@@ -1907,7 +1887,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         playlist_index: integer [Required]
             ID of playlist
         '''
-        return await self.retry_command(self.__playlist_delete, ctx, playlist_index)
+        return await self.__playlist_delete(ctx, playlist_index)
 
     async def __playlist_delete(self, ctx, playlist_index):
         if not await self.check_user_role(ctx):
@@ -1926,7 +1906,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.db_session.delete(playlist)
         self.db_session.commit()
         return await retry_discord_message_command(ctx.send, f'Deleted playlist {playlist_index}',
-                                        delete_after=self.delete_after)
+                                                   delete_after=self.delete_after)
 
     @playlist.command(name='rename')
     async def playlist_rename(self, ctx, playlist_index, *, playlist_name: str):
@@ -1938,9 +1918,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         playlist_name: str [Required]
             New name of playlist
         '''
-        return await self.retry_command(self.__playlist_rename, ctx, playlist_index, playlist_name)
-
-    async def __playlist_rename(self, ctx, playlist_index, playlist_name):
         if not await self.check_user_role(ctx):
             return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
@@ -1964,7 +1941,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         name: str [Required]
             Name of new playlist to create
         '''
-        return await self.retry_command(self.__playlist_queue_save, ctx, name)
+        return await self.__playlist_queue_save(ctx, name)
 
     @playlist.command(name='save-history')
     async def playlist_history_save(self, ctx, *, name: str):
@@ -1974,7 +1951,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         name: str [Required]
             Name of new playlist to create
         '''
-        return await self.retry_command(self.__playlist_queue_save, ctx, name, is_history=True)
+        return await self.__playlist_queue_save(ctx, name, is_history=True)
 
     async def __playlist_queue_save(self, ctx, name, is_history=False):
         playlist = await self.__playlist_create(ctx, name)
@@ -2041,7 +2018,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             else:
                 return await retry_discord_message_command(ctx.send, f'Invalid sub command {sub_command}',
                                                            delete_after=self.delete_after)
-        return await self.retry_command(self.__playlist_queue, ctx, playlist, shuffle)
+        return await self.__playlist_queue(ctx, playlist, shuffle)
 
     @commands.command(name='random-play')
     async def playlist_random_play(self, ctx, sub_command: Optional[str] = ''):
@@ -2069,7 +2046,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         if not history_playlist:
             return await retry_discord_message_command(ctx.send, 'Unable to find history for server', delete_after=self.delete_after)
-        return await self.retry_command(self.__playlist_queue, ctx, history_playlist, True, max_num=max_num, is_history=True)
+        return await self.__playlist_queue(ctx, history_playlist, True, max_num=max_num, is_history=True)
 
     async def __playlist_queue(self, ctx, playlist, shuffle, max_num=None, is_history=False):
         vc = ctx.voice_client
@@ -2138,9 +2115,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         playlist_index: integer [Required]
             ID of playlist
         '''
-        return await self.retry_command(self.__playlist_cleanup, ctx, playlist_index)
-
-    async def __playlist_cleanup(self, ctx, playlist_index):
         if not await self.check_user_role(ctx):
             return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):
@@ -2191,9 +2165,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         playlist_index_two: integer [Required]
             ID of playlist to be merged, will be deleted
         '''
-        return await self.retry_command(self.__playlist_merge, ctx, playlist_index_one, playlist_index_two)
-
-    async def __playlist_merge(self, ctx, playlist_index_one, playlist_index_two):
         if not await self.check_user_role(ctx):
             return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
         if not await self.__check_author_voice_chat(ctx):

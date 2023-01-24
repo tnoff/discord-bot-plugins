@@ -126,9 +126,6 @@ class Twitter(CogHelper):
         '''
         Our main loop.
         '''
-        return await self.retry_command(self.__main_loop)
-
-    async def __main_loop(self):
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
@@ -161,9 +158,7 @@ class Twitter(CogHelper):
         '''
         if not await self.check_user_role(ctx):
             return await ctx.send('Unable to verify user role, ignoring command')
-        return await self.retry_command(self.__subscribe, ctx, twitter_account, show_all_posts)
 
-    async def __subscribe(self, ctx, twitter_account, show_all_posts):
         # Strip twitter.com lead from string
         twitter_account = twitter_account.replace('https://twitter.com/', '')
         twitter_account = twitter_account.rstrip('/')
@@ -216,9 +211,7 @@ class Twitter(CogHelper):
         '''
         if not await self.check_user_role(ctx):
             return await ctx.send('Unable to verify user role, ignoring command')
-        return await self.retry_command(self.__unsubscribe, ctx, twitter_account)
 
-    async def __unsubscribe(self, ctx, twitter_account):
         twitter_account = twitter_account.replace('https://twitter.com/', '')
         twitter_account = twitter_account.rstrip('/')
         self.logger.debug(f'Attempting to unsubscribe from username: {twitter_account} '
@@ -249,9 +242,7 @@ class Twitter(CogHelper):
         '''
         if not await self.check_user_role(ctx):
             return await ctx.send('Unable to verify user role, ignoring command')
-        return await self.retry_command(self.__subscribe_list, ctx)
 
-    async def __subscribe_list(self, ctx):
         subscriptions = self.db_session.query(TwitterSubscription).\
                             filter(TwitterSubscription.channel_id == str(ctx.channel.id))
         screen_names = []
@@ -276,9 +267,7 @@ class Twitter(CogHelper):
         '''
         if not await self.check_user_role(ctx):
             return await ctx.send('Unable to verify user role, ignoring command')
-        return await self.retry_command(self.__add_filter, ctx, twitter_account, regex_filter)
 
-    async def __add_filter(self, ctx, twitter_account, regex_filter):
         # Strip twitter.com lead from string
         twitter_account = twitter_account.replace('https://twitter.com/', '')
         self.logger.debug(f'Attempting to add filter "{regex_filter}" to subscription "{twitter_account}"')
@@ -323,9 +312,7 @@ class Twitter(CogHelper):
         '''
         if not await self.check_user_role(ctx):
             return await ctx.send('Unable to verify user role, ignoring command')
-        return await self.retry_command(self.__remove_filter, ctx, twitter_account, regex_filter)
 
-    async def __remove_filter(self, ctx, twitter_account, regex_filter):
         # Strip twitter.com lead from string
         twitter_account = twitter_account.replace('https://twitter.com/', '')
         self.logger.debug(f'Attempting to remote filter "{regex_filter}" to subscription "{twitter_account}"')
@@ -357,9 +344,7 @@ class Twitter(CogHelper):
         '''
         if not await self.check_user_role(ctx):
             return await ctx.send('Unable to verify user role, ignoring command')
-        return await self.retry_command(self.__list_filters, ctx, twitter_account)
 
-    async def __list_filters(self, ctx, twitter_account):
         # Strip twitter.com lead from string
         twitter_account = twitter_account.replace('https://twitter.com/', '')
         try:

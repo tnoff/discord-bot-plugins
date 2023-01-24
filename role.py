@@ -86,9 +86,6 @@ class RoleAssignment(CogHelper):
         '''
         Our main player loop.
         '''
-        return await self.retry_command(self.__main_loop)
-
-    async def __main_loop(self):
         await self.bot.wait_until_ready()
 
         message_cache = {}
@@ -172,9 +169,6 @@ class RoleAssignment(CogHelper):
         '''
         if not await self.check_user_role(ctx):
             return await ctx.send('Unable to verify user role, ignoring command')
-        return await self.retry_command(self.__roles, ctx)
-
-    async def __roles(self, ctx):
         self.logger.debug(f'Setting up message for role grants in server {ctx.guild.id}')
         index = 0
         message_strings = []
