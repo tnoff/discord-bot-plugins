@@ -74,6 +74,8 @@ SPOTIFY_PLAYLIST_REGEX = r'^https://open.spotify.com/playlist/(?P<playlist_id>([
 SPOTIFY_ALBUM_REGEX = r'^https://open.spotify.com/album/(?P<album_id>([a-zA-Z0-9]+))(?P<extra_query>(\?[a-zA-Z0-9=&_-]+)?)(?P<shuffle>( *shuffle)?)'
 YOUTUBE_PLAYLIST_REGEX = r'^https://(www.)?youtube.com/playlist\?list=(?P<playlist_id>[a-zA-Z0-9_-]+)(?P<shuffle> *(shuffle)?)'
 
+NUMBER_REGEX = r'.*(?P<number>[0-9]+).*'
+
 # We only care about the following data in the yt-dlp dict
 YT_DLP_KEYS = ['id', 'title', 'webpage_url', 'uploader', 'duration']
 
@@ -1998,8 +2000,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         playlist_index: integer [Required]
             ID of playlist
-        Sub commands - [shuffle]
+        Sub commands - [shuffle] [max_number]
             shuffle - Shuffle playlist when entering it into queue
+            max_num - Only add this number of songs to the queue
         '''
         if not await self.check_user_role(ctx):
             return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
@@ -2012,13 +2015,14 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not playlist:
             return None
         shuffle = False
+        max_num = None
         if sub_command:
-            if sub_command.lower() == 'shuffle':
+            if 'shuffle' in sub_command.lower():
                 shuffle = True
-            else:
-                return await retry_discord_message_command(ctx.send, f'Invalid sub command {sub_command}',
-                                                           delete_after=self.delete_after)
-        return await self.__playlist_queue(ctx, playlist, shuffle)
+            number_matcher = re_match(NUMBER_REGEX, sub_command.lower())
+            if number_matcher:
+                max_num = int(number_matcher.group('number'))
+        return await self.__playlist_queue(ctx, playlist, shuffle, max_num)
 
     @commands.command(name='random-play')
     async def playlist_random_play(self, ctx, sub_command: Optional[str] = ''):
@@ -2046,9 +2050,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         if not history_playlist:
             return await retry_discord_message_command(ctx.send, 'Unable to find history for server', delete_after=self.delete_after)
-        return await self.__playlist_queue(ctx, history_playlist, True, max_num=max_num, is_history=True)
+        return await self.__playlist_queue(ctx, history_playlist, True, max_num, is_history=True)
 
-    async def __playlist_queue(self, ctx, playlist, shuffle, max_num=None, is_history=False):
+    async def __playlist_queue(self, ctx, playlist, shuffle, max_num, is_history=False):
         vc = ctx.voice_client
         if not vc:
             await ctx.invoke(self.connect_)
@@ -2067,11 +2071,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 self.db_session.add(item)
                 self.db_session.commit()
 
-        if shuffle:
-            await retry_discord_message_command(ctx.send, 'Shuffling playlist items',
-                                                delete_after=self.delete_after)
-            random_shuffle(playlist_items)
-
         if max_num:
             if max_num < 0:
                 await retry_discord_message_command(ctx.send, f'Invalid number of songs {max_num}',
@@ -2079,6 +2078,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 return
             if max_num <= len(playlist_items):
                 playlist_items = playlist_items[:max_num]
+
+        if shuffle:
+            await retry_discord_message_command(ctx.send, 'Shuffling playlist items',
+                                                delete_after=self.delete_after)
+            random_shuffle(playlist_items)
 
         broke_early = False
         for item in playlist_items:
