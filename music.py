@@ -1659,8 +1659,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.logger.info(f'Adding video_id {data_id} to playlist "{playlist.name}" '
                          f' in guild {guild_id}')
         item_count = self.db_session.query(PlaylistItem).filter(PlaylistItem.playlist_id == playlist.id).count()
-        if item_count >= (self.queue_max_size * 2):
-            raise PlaylistMaxLength(f'Playlist {playlist.id} hit max length')
+        if item_count >= (self.server_playlist_max):
+            raise PlaylistMaxLength(f'Playlist {playlist.id} greater to or equal to max length {self.server_playlist_max}')
 
         playlist_item = PlaylistItem(title=shorten_string_cjk(data_title, 256),
                                      video_id=data_id,
