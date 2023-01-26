@@ -1592,6 +1592,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             self.db_session.commit()
         except IntegrityError:
             self.db_session.rollback()
+            self.db_session.commit()
             await retry_discord_message_command(ctx.send, f'Unable to create playlist "{name}", name likely already exists')
             return None
         self.logger.info(f'Playlist created "{playlist.name}" with ID {playlist.id} in guild {ctx.guild.id}')
@@ -1678,6 +1679,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 self.logger.exception(e)
                 self.logger.error(str(e))
             self.db_session.rollback()
+            self.db_session.commit()
             return None
 
     @playlist.command(name='item-add')
@@ -2071,6 +2073,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 self.db_session.add(item)
                 self.db_session.commit()
 
+        if shuffle:
+            await retry_discord_message_command(ctx.send, 'Shuffling playlist items',
+                                                delete_after=self.delete_after)
+            random_shuffle(playlist_items)
+
         if max_num:
             if max_num < 0:
                 await retry_discord_message_command(ctx.send, f'Invalid number of songs {max_num}',
@@ -2078,11 +2085,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 return
             if max_num <= len(playlist_items):
                 playlist_items = playlist_items[:max_num]
-
-        if shuffle:
-            await retry_discord_message_command(ctx.send, 'Shuffling playlist items',
-                                                delete_after=self.delete_after)
-            random_shuffle(playlist_items)
 
         broke_early = False
         for item in playlist_items:
