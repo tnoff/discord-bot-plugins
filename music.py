@@ -32,7 +32,7 @@ from yt_dlp.utils import DownloadError
 
 from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
-from discord_bot.utils import retry_command
+from discord_bot.utils import async_retry_command
 
 # Max title length for table views
 MAX_STRING_LENGTH = 32
@@ -167,7 +167,7 @@ async def retry_discord_message_command(func, *args, **kwargs):
             raise #pylint:disable=misplaced-bare-raise
     post_exception_functions = [check_429]
     exceptions = (HTTPException, RateLimited, DiscordServerError)
-    return await retry_command(func, *args, **kwargs, accepted_exceptions=exceptions, post_exception_functions=post_exception_functions)
+    return await async_retry_command(func, *args, **kwargs, accepted_exceptions=exceptions, post_exception_functions=post_exception_functions)
 
 def json_converter(o): #pylint:disable=inconsistent-return-statements
     '''
@@ -626,14 +626,14 @@ class DownloadClient():
         try:
             data = self.ytdl.extract_info(source_dict['search_string'], download=download)
         except DownloadError:
-            self.logger.error(f'Error downloading youtube search "{source_dict["search_string"]}')
+            self.logger.warning(f'Error downloading youtube search "{source_dict["search_string"]}')
             return None
         # Make sure we get the first entry here
         # Since we don't pass "url" directly anymore
         try:
             data = data['entries'][0]
         except IndexError:
-            self.logger.error(f'Error downloading youtube search "{source_dict["search_string"]}')
+            self.logger.warning(f'Error downloading youtube search "{source_dict["search_string"]}')
             return None
         except KeyError:
             pass
@@ -644,7 +644,7 @@ class DownloadClient():
                 file_path = Path(data['requested_downloads'][0]['filepath'])
                 self.logger.info(f'Downloaded url "{data["webpage_url"]}" to file "{str(file_path)}"')
             except (KeyError, IndexError):
-                self.logger.error(f'Unable to get filepath from ytdl data {data}')
+                self.logger.warning(f'Unable to get filepath from ytdl data {data}')
         return SourceFile(file_path, data, source_dict, self.logger)
 
     async def create_source(self, source_dict, loop, download=False):
@@ -660,13 +660,13 @@ class DownloadClient():
             self.logger.debug(f'Checking for spotify playlist {playlist_id}')
             response, data = self.spotify_client.playlist_get(playlist_id)
             if response.status_code != 200:
-                self.logger.error(f'Unable to find spotify data {response.status_code}, {response.text}')
+                self.logger.warning(f'Unable to find spotify data {response.status_code}, {response.text}')
                 return []
         if album_id:
             self.logger.debug(f'Checking for spotify album {album_id}')
             response, data = self.spotify_client.album_get(album_id)
             if response.status_code != 200:
-                self.logger.error(f'Unable to find spotify data {response.status_code}, {response.text}')
+                self.logger.warning(f'Unable to find spotify data {response.status_code}, {response.text}')
                 return []
         search_strings = []
         for item in data:
@@ -679,7 +679,7 @@ class DownloadClient():
             self.logger.debug(f'Checking youtube playlist id {playlist_id}')
             response, data = self.youtube_client.playlist_list_items(playlist_id)
             if response.status_code != 200:
-                self.logger.error(f'Unable to find youtube playlist {response.status_code}, {response.text}')
+                self.logger.warning(f'Unable to find youtube playlist {response.status_code}, {response.text}')
                 return []
             return data
         return []
@@ -1180,17 +1180,17 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if player.history_playlist_id:
             playlist = self.db_session.query(Playlist).get(player.history_playlist_id)
             for item in history_items:
-                try:
-                    self.__playlist_add_item(guild.id, playlist, item['id'], item['title'], item['uploader'], ignore_fail=True)
-                except PlaylistMaxLength:
-                    # Sql alchemy wont let you call delete directly with a limit
-                    # So grab the id here
-                    deleted_item = [i for i in self.db_session.query(PlaylistItem).\
-                                    filter(PlaylistItem.playlist_id == playlist.id).\
-                                    order_by(desc(PlaylistItem.created_at)).limit(1)][0]
-                    if deleted_item:
-                        self.db_session.query(PlaylistItem).filter(PlaylistItem.id == deleted_item.id).delete()
-                    self.__playlist_add_item(guild.id, playlist, item['id'], item['title'], item['uploader'], ignore_fail=True)
+                while True:
+                    try:
+                        self.__playlist_add_item(playlist, item['id'], item['title'], item['uploader'], ignore_fail=True)
+                        break
+                    except PlaylistMaxLength:
+                        deleted_item =  self.db_session.query(PlaylistItem).\
+                                            filter(PlaylistItem.playlist_id == playlist.id).\
+                                            order_by(desc(PlaylistItem.created_at)).first()
+                        if deleted_item:
+                            self.db_session.delete(deleted_item)
+                            self.db_session.commit()
 
         guild_path = self.download_dir / f'{guild.id}'
         if guild_path.exists():
@@ -1275,7 +1275,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                  f'in guild {ctx.guild.id}')
                 await vc.move_to(channel)
             except asyncio_timeout:
-                self.logger.error(f'Moving to channel {channel.id} timed out')
+                self.logger.warning(f'Moving to channel {channel.id} timed out')
                 return await retry_discord_message_command(ctx.send, f'Moving to channel: <{channel}> timed out.')
         else:
             try:
@@ -1360,19 +1360,26 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         if not vc or not vc.is_connected():
             return await retry_discord_message_command(ctx.send, 'I am not currently playing anything',
-                                            delete_after=self.delete_after)
+                                                       delete_after=self.delete_after)
 
         player = await self.get_player(ctx, vc.channel)
         if player.play_queue.empty():
             return await retry_discord_message_command(ctx.send, 'There are currently no more queued songs.',
-                                            delete_after=self.delete_after)
+                                                      delete_after=self.delete_after)
+        queue_copy = deepcopy(player.play_queue)
         player.play_queue.clear()
         await retry_discord_message_command(ctx.send, 'Cleared all items from queue',
-                                 delete_after=self.delete_after)
+                                            delete_after=self.delete_after)
 
         # Reset queue messages
         await player.clear_queue_messages()
-        await player.clear_remaining_queue()
+        # Make sure we delete all the old files
+        while True:
+            try:
+                source_dict = queue_copy.get_nowait()
+                source_dict.delete()
+            except QueueEmpty:
+                break
 
     @commands.command(name='history')
     async def history_(self, ctx):
@@ -1434,12 +1441,12 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         if not vc or not vc.is_connected():
             return await retry_discord_message_command(ctx.send, 'I am not currently playing anything',
-                                            delete_after=self.delete_after)
+                                                       delete_after=self.delete_after)
 
         player = await self.get_player(ctx, vc.channel)
         if player.play_queue.empty():
             return await retry_discord_message_command(ctx.send, 'There are currently no more queued songs.',
-                                            delete_after=self.delete_after)
+                                                       delete_after=self.delete_after)
         player.play_queue.shuffle()
 
         await player.update_queue_strings()
@@ -1658,9 +1665,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         for mess in messages:
             await retry_discord_message_command(ctx.send, mess, delete_after=self.delete_after)
 
-    def __playlist_add_item(self, guild_id, playlist, data_id, data_title, data_uploader, ignore_fail=False):
-        self.logger.info(f'Adding video_id {data_id} to playlist "{playlist.name}" '
-                         f' in guild {guild_id}')
+    def __playlist_add_item(self, playlist, data_id, data_title, data_uploader, ignore_fail=False):
+        self.logger.info(f'Adding video_id {data_id} to playlist {playlist.id}')
         item_count = self.db_session.query(PlaylistItem).filter(PlaylistItem.playlist_id == playlist.id).count()
         if item_count >= (self.server_playlist_max):
             raise PlaylistMaxLength(f'Playlist {playlist.id} greater to or equal to max length {self.server_playlist_max}')
@@ -1677,7 +1683,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         except IntegrityError as e:
             if not ignore_fail:
                 self.logger.exception(e)
-                self.logger.error(str(e))
+                self.logger.warning(str(e))
             self.db_session.rollback()
             self.db_session.commit()
             return None
@@ -1724,7 +1730,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             self.logger.info(f'Adding video_id {source_dict["id"]} to playlist "{playlist.name}" '
                              f' in guild {ctx.guild.id}')
             try:
-                playlist_item = self.__playlist_add_item(ctx.build.id, playlist, source_dict['id'], source_dict['title'], source_dict['uploader'])
+                playlist_item = self.__playlist_add_item(playlist, source_dict['id'], source_dict['title'], source_dict['uploader'])
             except PlaylistMaxLength:
                 retry_discord_message_command(ctx.send, f'Cannot add more items to playlist "{playlist.name}", already max size', delete_after=self.delete_after)
                 return
@@ -1981,7 +1987,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         for data in queue_copy:
             try:
-                playlist_item = self.__playlist_add_item(ctx.guild.id, playlist, data['id'], data['title'], data['uploader'])
+                playlist_item = self.__playlist_add_item(playlist, data['id'], data['title'], data['uploader'])
             except PlaylistMaxLength:
                 retry_discord_message_command(ctx.send, f'Cannot add more items to playlist "{playlist.name}", already max size', delete_after=self.delete_after)
                 break
@@ -2188,7 +2194,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         query = self.db_session.query(PlaylistItem).filter(PlaylistItem.playlist_id == playlist_two.id)
         for item in query:
             try:
-                playlist_item = self.__playlist_add_item(ctx.guild.id, playlist_one, item.video_id, item.title, item.uploader)
+                playlist_item = self.__playlist_add_item(playlist_one, item.video_id, item.title, item.uploader)
             except PlaylistMaxLength:
                 retry_discord_message_command(ctx.send, f'Cannot add more items to playlist "{playlist_one.name}", already max size', delete_after=self.delete_after)
                 return

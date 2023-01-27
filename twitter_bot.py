@@ -3,16 +3,17 @@ import re
 import typing
 
 from discord.ext import commands
-from requests.exceptions import ConnectionError as requests_connection_error
+from requests.exceptions import ConnectionError as connection_error
 from sqlalchemy import Boolean, Column, Integer, BigInteger, String
 from sqlalchemy import ForeignKey
 from twitter import Api
 from twitter.error import TwitterError
+from urllib3.exceptions import MaxRetryError
 
 from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
 from discord_bot.exceptions import CogMissingRequiredArg
-
+from discord_bot.utils import retry_command
 
 REQUIRED_ARGS = [
     'twitter_consumer_key',
@@ -59,7 +60,7 @@ class Twitter(CogHelper):
             if key not in settings:
                 raise CogMissingRequiredArg(f'Twitter cog missing required key {key}')
         self.twitter_api = None
-        self._restart_client()
+        self.restart_client()
 
         self._task = None
 
@@ -70,7 +71,10 @@ class Twitter(CogHelper):
         if self._task:
             self._task.cancel()
 
-    def _restart_client(self):
+    def restart_client(self):
+        '''
+        Reset twitter client
+        '''
         self.logger.debug('Reloading twitter client')
         self.twitter_api = Api(
                consumer_key=self.settings['twitter_consumer_key'],
@@ -78,19 +82,24 @@ class Twitter(CogHelper):
                access_token_key=self.settings['twitter_access_token_key'],
                access_token_secret=self.settings['twitter_access_token_secret'])
 
+    def retry_twitter_command(self, func, *args, **kwargs):
+        '''
+        Retry twitter commands and resetart client if necessary
+        '''
+        exceptions = (connection_error, MaxRetryError, TwitterError)
+        return retry_command(func, *args, **kwargs, accepted_exceptions=exceptions, post_exception_function=[self.restart_client])
+
     async def _check_subscription(self, subscription, subscription_filters):
         self.logger.debug(f'Checking users twitter feed for '
                           f'new posts for user "{subscription.twitter_user_id}" since last post "{subscription.last_post}"')
         channel = self.bot.get_channel(int(subscription.channel_id))
-        try:
-            timeline = self.twitter_api.GetUserTimeline(user_id=subscription.twitter_user_id,
-                                                        since_id=subscription.last_post,
-                                                        include_rts=subscription.show_all_posts,
-                                                        exclude_replies=not subscription.show_all_posts)
-        except (TwitterError, requests_connection_error) as error:
-            self.logger.exception(f'Exception getting user: {error}')
-            self._restart_client()
-            return
+        kwargs = {
+            'user_id': subscription.twitter_user_id,
+            'since_id': subscription.last_post,
+            'include_rts': subscription.show_all_posts,
+            'exclude_replies': not subscription.show_all_posts,
+        }
+        timeline = self.retry_twitter_command(self.twitter_api.GetUserTimeline, **kwargs)
 
         try:
             timeline[-1].id
@@ -163,11 +172,13 @@ class Twitter(CogHelper):
         twitter_account = twitter_account.replace('https://twitter.com/', '')
         twitter_account = twitter_account.rstrip('/')
         self.logger.debug(f'Attempting to subscribe to username: {twitter_account}')
+        kwargs = {
+            'screen_name': twitter_account,
+        }
         try:
-            user = self.twitter_api.GetUser(screen_name=twitter_account)
-        except (TwitterError, requests_connection_error) as error:
+            user  = self.retry_twitter_command(self.twitter_api.GetUser, **kwargs)
+        except TwitterError as error:
             self.logger.exception(f'Exception getting user: {error}')
-            self._restart_client()
             return await ctx.send(f'Error from twitter api "{error}"')
         # Then check if subscription exists
         subscription = self.db_session.query(TwitterSubscription).\
@@ -177,12 +188,16 @@ class Twitter(CogHelper):
             return await ctx.send(f'Already subscribed to user {twitter_account}')
 
         show_posts = show_all_posts.strip().lower() == 'show-all'
+        kwargs = {
+            'user_id': user.id,
+            'count': 1,
+            'include_rts': show_posts,
+            'exclude_replies': not show_posts,
+        }
         try:
-            timeline = self.twitter_api.GetUserTimeline(user_id=user.id, count=1,
-                                                        include_rts=show_posts, exclude_replies=not show_posts)
-        except (TwitterError, requests_connection_error) as error:
+            timeline  = self.retry_twitter_command(self.twitter_api.GetUserTimeline, **kwargs)
+        except TwitterError as error:
             self.logger.exception(f'Exception getting user: {error}')
-            self._restart_client()
             return await ctx.send(f'Error from twitter api "{error}"')
 
         if len(timeline) == 0:
@@ -216,11 +231,13 @@ class Twitter(CogHelper):
         twitter_account = twitter_account.rstrip('/')
         self.logger.debug(f'Attempting to unsubscribe from username: {twitter_account} '
                           f'and channel id {ctx.channel.id}')
+        kwargs = {
+            'screen_name': twitter_account,
+        }
         try:
-            user = self.twitter_api.GetUser(screen_name=twitter_account)
-        except (TwitterError, requests_connection_error) as error:
+            user  = self.retry_twitter_command(self.twitter_api.GetUser, **kwargs)
+        except TwitterError as error:
             self.logger.exception(f'Exception getting user: {error}')
-            self._restart_client()
             return await ctx.send(f'Error from twitter api "{error}"')
         # Then check if subscription exists
         subscription = self.db_session.query(TwitterSubscription).\
@@ -247,13 +264,15 @@ class Twitter(CogHelper):
                             filter(TwitterSubscription.channel_id == str(ctx.channel.id))
         screen_names = []
         for subs in subscriptions:
+            kwargs = {
+                'screen_name': subs.twitter_user_id,
+            }
             try:
-                user = self.twitter_api.GetUser(user_id=subs.twitter_user_id)
+                user  = self.retry_twitter_command(self.twitter_api.GetUser, **kwargs)
                 screen_names.append(user.screen_name)
-            except (TwitterError, requests_connection_error) as error:
-                self.logger.exception(f'Exception getting user {subs.twitter_user_id}: {error}')
-                self._restart_client()
-                return await ctx.send('Error getting twitter names')
+            except TwitterError as error:
+                self.logger.exception(f'Exception getting user: {error}')
+                return await ctx.send(f'Error from twitter api "{error}"')
         message = '\n'.join(name for name in screen_names)
         return await ctx.send(f'```Subscribed to \n{message}```')
 
@@ -271,11 +290,13 @@ class Twitter(CogHelper):
         # Strip twitter.com lead from string
         twitter_account = twitter_account.replace('https://twitter.com/', '')
         self.logger.debug(f'Attempting to add filter "{regex_filter}" to subscription "{twitter_account}"')
+        kwargs = {
+            'screen_name': twitter_account,
+        }
         try:
-            user = self.twitter_api.GetUser(screen_name=twitter_account)
-        except (TwitterError, requests_connection_error) as error:
+            user  = self.retry_twitter_command(self.twitter_api.GetUser, **kwargs)
+        except TwitterError as error:
             self.logger.exception(f'Exception getting user: {error}')
-            self._restart_client()
             return await ctx.send(f'Error from twitter api "{error}"')
         # Then check if subscription exists
         subscription = self.db_session.query(TwitterSubscription).\
@@ -316,11 +337,13 @@ class Twitter(CogHelper):
         # Strip twitter.com lead from string
         twitter_account = twitter_account.replace('https://twitter.com/', '')
         self.logger.debug(f'Attempting to remote filter "{regex_filter}" to subscription "{twitter_account}"')
+        kwargs = {
+            'screen_name': twitter_account,
+        }
         try:
-            user = self.twitter_api.GetUser(screen_name=twitter_account)
-        except (TwitterError, requests_connection_error) as error:
+            user  = self.retry_twitter_command(self.twitter_api.GetUser, **kwargs)
+        except TwitterError as error:
             self.logger.exception(f'Exception getting user: {error}')
-            self._restart_client()
             return await ctx.send(f'Error from twitter api "{error}"')
         # Then check if subscription exists
         subscription = self.db_session.query(TwitterSubscription).\
@@ -347,11 +370,13 @@ class Twitter(CogHelper):
 
         # Strip twitter.com lead from string
         twitter_account = twitter_account.replace('https://twitter.com/', '')
+        kwargs = {
+            'screen_name': twitter_account,
+        }
         try:
-            user = self.twitter_api.GetUser(screen_name=twitter_account)
-        except (TwitterError, requests_connection_error) as error:
+            user  = self.retry_twitter_command(self.twitter_api.GetUser, **kwargs)
+        except TwitterError as error:
             self.logger.exception(f'Exception getting user: {error}')
-            self._restart_client()
             return await ctx.send(f'Error from twitter api "{error}"')
         # Then check if subscription exists
         subscription = self.db_session.query(TwitterSubscription).\
