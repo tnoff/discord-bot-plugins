@@ -87,7 +87,7 @@ class Twitter(CogHelper):
         Retry twitter commands and resetart client if necessary
         '''
         exceptions = (connection_error, MaxRetryError, TwitterError)
-        return retry_command(func, *args, **kwargs, accepted_exceptions=exceptions, post_exception_function=[self.restart_client])
+        return retry_command(func, *args, **kwargs, accepted_exceptions=exceptions, post_exception_functions=[self.restart_client])
 
     async def _check_subscription(self, subscription, subscription_filters):
         self.logger.debug(f'Checking users twitter feed for '
