@@ -1216,7 +1216,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             history_playlist_id = None
             if self.db_session:
                 history_playlist = self.db_session.query(Playlist).\
-                    filter(Playlist.server_id == ctx.guild.id).\
+                    filter(Playlist.server_id == str(ctx.guild.id)).\
                     filter(Playlist.is_history == True).first()
 
                 if not history_playlist:
@@ -1586,7 +1586,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             await retry_discord_message_command(ctx.send, f'Unable to create playlist "{name}", name cannot contain __playhistory__')
             return None
         # Check we haven't hit max playlist for server
-        server_playlist_count = self.db_session.query(Playlist).filter(Playlist.server_id == ctx.guild.id).count()
+        server_playlist_count = self.db_session.query(Playlist).filter(Playlist.server_id == str(ctx.guild.id)).count()
         if server_playlist_count >= self.server_playlist_max:
             await retry_discord_message_command(ctx.send, f'Unable to create playlist "{name}", already hit max playlists for server')
             return None
@@ -2053,7 +2053,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             except ValueError:
                 retry_discord_message_command(ctx.send, f'Using default number of max songs {DEFAULT_RANDOM_QUEUE_LENGTH}', delete_after=self.delete_after)
         history_playlist = self.db_session.query(Playlist).\
-            filter(Playlist.server_id == ctx.guild.id).\
+            filter(Playlist.server_id == str(ctx.guild.id)).\
             filter(Playlist.is_history == True).first()
 
         if not history_playlist:
