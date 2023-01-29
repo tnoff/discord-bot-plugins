@@ -556,10 +556,10 @@ class CacheFile():
             if item['file_path'] == file_path:
                 item['count'] += 1
                 item['last_iterated_at'] = datetime.utcnow()
-                self.logger.info('Cache entry existed, bumping')
+                self.logger.info(f'Cache entry existed for path {str(file_path)}, bumping')
                 return
         now = datetime.utcnow()
-        self.logger.info('Cache entry did not exist, creating now')
+        self.logger.info(f'Cache entry did not exist for path {str(file_path)}, creating now')
         self._data.append({
             'file_path': file_path,
             'count': 1,
@@ -571,10 +571,9 @@ class CacheFile():
         '''
         Remove oldest and least used file from cache
         '''
-        self.logger.info('Checking for cache files to remove')
         num_to_remove = len(self._data) - self.max_cache_files
         if num_to_remove < 1:
-            self.logger.info('Less cached files than maximum, exiting')
+            self.logger.info(f'Total cache files {len(self._data)} and max is {self.max_cache_files}, no need to remove files')
             return
         self.logger.info(f'Need to remove {num_to_remove} cached files')
         sorted_list = sorted(self._data, key=lambda k: (float(k['count']), k['last_iterated_at']), reverse=False)
@@ -948,7 +947,7 @@ class MusicPlayer:
             if self.cache_file:
                 self.logger.info(f'Iterating file on original path {str(source_download["original_path"])}')
                 self.cache_file.iterate_file(source_download['original_path'])
-                self.logger.info('Checking cache files to remove')
+                self.logger.debug('Checking cache files to remove in music player')
                 self.cache_file.remove()
                 self.cache_file.write_file()
             await sleep(1)
