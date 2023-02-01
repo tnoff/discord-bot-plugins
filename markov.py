@@ -8,20 +8,38 @@ from typing import Optional
 
 from discord import TextChannel
 from discord.ext import commands
-from discord.errors import NotFound
+from discord.errors import NotFound, HTTPException, DiscordServerError, RateLimited
 from sqlalchemy import Column, DateTime, Integer, String
 from sqlalchemy import ForeignKey, UniqueConstraint
 
 from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
+from discord_bot.utils import async_retry_command
 
 # Make length of a leader or follower word
 MAX_WORD_LENGTH = 255
 
 # Default for how many days to keep messages around
-MARKOV_HISTORY_RETENTION_DAYS = 365
+MARKOV_HISTORY_RETENTION_DAYS_DEFAULT = 365
 
+# Default for how to wait between each loop
 LOOP_SLEEP_INTERVAL_DEFAULT = 300
+
+# Limit for how many messages we grab on each history check
+MESSAGE_CHECK_LIMIT = 16
+
+
+async def retry_discord_message_command(func, *args, **kwargs):
+    '''
+    Retry discord send message command, catch case of rate limiting
+    '''
+    def check_429(ex):
+        if '429' not in str(ex):
+            raise #pylint:disable=misplaced-bare-raise
+    post_exception_functions = [check_429]
+    exceptions = (HTTPException, RateLimited, DiscordServerError)
+    return await async_retry_command(func, *args, **kwargs, accepted_exceptions=exceptions,
+                                     post_exception_functions=post_exception_functions)
 
 def clean_message(content, emoji_ids):
     '''
@@ -98,8 +116,8 @@ class Markov(CogHelper):
         BASE.metadata.create_all(self.db_engine)
         BASE.metadata.bind = self.db_engine
         self.loop_sleep_interval = settings.get('markov_loop_sleep_interval', LOOP_SLEEP_INTERVAL_DEFAULT)
-        if 'markov_history_rention_days' not in settings:
-            self.settings['markov_history_rention_days'] = MARKOV_HISTORY_RETENTION_DAYS
+        self.message_check_limit = settings.get('markov_message_check_limit', MESSAGE_CHECK_LIMIT)
+        self.history_retention_days = settings.get('markov_history_retention_days', MARKOV_HISTORY_RETENTION_DAYS_DEFAULT)
 
         self.lock_file = Path(NamedTemporaryFile(delete=False).name) #pylint:disable=consider-using-with
         self._task = None
@@ -150,7 +168,7 @@ class Markov(CogHelper):
 
         while not self.bot.is_closed():
             self.logger.debug('Markov - Entering message gather loop')
-            retention_cutoff = datetime.utcnow() - timedelta(days=self.settings['markov_history_rention_days'])
+            retention_cutoff = datetime.utcnow() - timedelta(days= self.history_retention_days)
             self.logger.debug(f'Using cutoff {retention_cutoff} for markov bot')
 
             for markov_channel in self.db_session.query(MarkovChannel).all():
@@ -163,11 +181,11 @@ class Markov(CogHelper):
                 # Start at the beginning of channel history,
                 # slowly make your way make to current day
                 if not markov_channel.last_message_id:
-                    messages = [m async for m in channel.history(limit=16, after=retention_cutoff, oldest_first=True)]
+                    messages = [m async for m in retry_discord_message_command(channel.history, limit=self.message_check_limit, after=retention_cutoff, oldest_first=True)]
                 else:
                     try:
-                        last_message = await channel.fetch_message(markov_channel.last_message_id)
-                        messages = [m async for m in channel.history(after=last_message, limit=16)]
+                        last_message = await retry_discord_message_command(channel.fetch_message, markov_channel.last_message_id)
+                        messages = [m async for m in retry_discord_message_command(channel.history(after=last_message, limit=self.message_check_limit))]
                     except NotFound:
                         self.logger.error(f'Unable to find message {markov_channel.last_message_id}'
                                           f' in channel {markov_channel.id}')
