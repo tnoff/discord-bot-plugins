@@ -1,4 +1,4 @@
-import asyncio
+from asyncio import sleep
 from datetime import datetime
 
 from discord.ext import commands
@@ -11,6 +11,8 @@ from discord_bot.database import BASE
 
 # Time until we delete assignment messages, in seconds
 MESSAGE_EXPIRY_DEFAULT = 60 * 60 * 24 * 7
+
+LOOP_SLEEP_INTERVAL_DEFAULT = 300
 
 EMOJI_MAPPING = {
     '\u0030\ufe0f\u20e3': ':zero:',
@@ -72,7 +74,7 @@ class RoleAssignment(CogHelper):
         BASE.metadata.create_all(self.db_engine)
         BASE.metadata.bind = self.db_engine
         self.message_expiry_timeout = settings.get('role_assignment_expiry_timeout', MESSAGE_EXPIRY_DEFAULT)
-
+        self.loop_sleep_interval = settings.get('role_loop_sleep_interval', LOOP_SLEEP_INTERVAL_DEFAULT)
         self._task = None
 
     async def cog_load(self):
@@ -159,7 +161,7 @@ class RoleAssignment(CogHelper):
                     filter(RoleAssignmentReaction.role_assignment_message_id == assignment_message.id).delete() #pylint:disable=line-too-long
                 self.db_session.delete(assignment_message)
                 self.db_session.commit()
-            await asyncio.sleep(300)
+            await sleep(300)
 
     @commands.command(name='assign-roles')
     async def roles(self, ctx):

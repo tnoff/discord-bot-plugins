@@ -21,6 +21,8 @@ MAX_WORD_LENGTH = 255
 # Default for how many days to keep messages around
 MARKOV_HISTORY_RETENTION_DAYS = 365
 
+LOOP_SLEEP_INTERVAL_DEFAULT = 300
+
 def clean_message(content, emoji_ids):
     '''
     Clean channel message
@@ -95,6 +97,7 @@ class Markov(CogHelper):
         super().__init__(bot, db_engine, logger, settings)
         BASE.metadata.create_all(self.db_engine)
         BASE.metadata.bind = self.db_engine
+        self.loop_sleep_interval = settings.get('markov_loop_sleep_interval', LOOP_SLEEP_INTERVAL_DEFAULT)
         if 'markov_history_rention_days' not in settings:
             self.settings['markov_history_rention_days'] = MARKOV_HISTORY_RETENTION_DAYS
 
@@ -206,7 +209,7 @@ class Markov(CogHelper):
             self.db_session.commit()
             # Wait until next loop
             self.logger.debug('Waiting 5 minutes for next markov iteration')
-            await sleep(300) # Every 5 minutes
+            await sleep(self.loop_sleep_interval) # Every 5 minutes
 
     @commands.group(name='markov', invoke_without_command=False)
     async def markov(self, ctx):

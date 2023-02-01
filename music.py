@@ -909,8 +909,9 @@ class MusicPlayer:
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
+            # Await a sleep here just so other tasks can grab loop
+            await sleep(.01)
             if self.play_queue.shutdown:
-                await sleep(1)
                 continue
             source_dict = await self.download_queue.get()
 
@@ -919,12 +920,10 @@ class MusicPlayer:
             except SongTooLong:
                 await retry_discord_message_command(source_dict['message'].edit, content=f'Search "{source_dict["search_string"]}" exceeds maximum of {self.max_song_length} seconds, skipping',
                                                     delete_after=self.delete_after)
-                await sleep(1)
                 continue
             if source_download is None:
                 await retry_discord_message_command(source_dict['message'].edit, content=f'Issue downloading video "{source_dict["search_string"]}", skipping',
                                                     delete_after=self.delete_after)
-                await sleep(1)
                 continue
             try:
                 self.play_queue.put_nowait(source_download)
@@ -933,7 +932,6 @@ class MusicPlayer:
             except QueueFull:
                 await retry_discord_message_command(source_dict['message'].edit, content=f'Queue is full, cannot add "{source_download["title"]}"', delete_after=self.delete_after)
                 source_dict.delete()
-                await sleep(1)
                 continue
             except PutsBlocked:
                 self.logger.warning(f'Puts Blocked on queue in guild "{source_dict["guild_id"]}", assuming shutdown')
@@ -950,7 +948,6 @@ class MusicPlayer:
                 self.logger.debug('Checking cache files to remove in music player')
                 self.cache_file.remove()
                 self.cache_file.write_file()
-            await sleep(1)
 
     def set_next(self, *_args, **_kwargs):
         '''
@@ -1022,8 +1019,8 @@ class MusicPlayer:
         # Block puts first on download queue
         self.download_queue.block()
         self.play_queue.block()
-        # Wait a second to ensure we have the block set
-        await sleep(1)
+        # Wait to ensure we have the block set
+        await sleep(.5)
         messages = []
         # Delete any messages from download queue
         # Delete any files in play queue that are already added

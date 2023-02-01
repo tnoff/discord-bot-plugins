@@ -1,4 +1,4 @@
-import asyncio
+from asyncio import sleep
 import re
 import typing
 
@@ -14,6 +14,8 @@ from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
 from discord_bot.exceptions import CogMissingRequiredArg
 from discord_bot.utils import retry_command
+
+LOOP_SLEEP_INTERVAL_DEFAULT = 300
 
 REQUIRED_ARGS = [
     'twitter_consumer_key',
@@ -56,6 +58,7 @@ class Twitter(CogHelper):
         super().__init__(bot, db_engine, logger, settings)
         BASE.metadata.create_all(self.db_engine)
         BASE.metadata.bind = self.db_engine
+        self.loop_sleep_interval = settings.get('twitter_loop_sleep_interval', LOOP_SLEEP_INTERVAL_DEFAULT)
         for key in REQUIRED_ARGS:
             if key not in settings:
                 raise CogMissingRequiredArg(f'Twitter cog missing required key {key}')
@@ -145,8 +148,8 @@ class Twitter(CogHelper):
                                             filter(TwitterSubscriptionFilter.twitter_subscription_id == subscription.id)
                 await self._check_subscription(subscription, subscription_filters)
                 # Sleep after each iteration so other tasks can proceed
-                await asyncio.sleep(.01)
-            await asyncio.sleep(300)
+                await sleep(.01)
+            await sleep(self.loop_sleep_interval)
 
     @commands.group(name='twitter', invoke_without_command=False)
     async def twitter(self, ctx):
