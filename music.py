@@ -465,7 +465,7 @@ class SourceFile():
             uuid_path = file_path.parent / f'{source_dict["guild_id"]}' / f'{uuid4()}{"".join(i for i in file_path.suffixes)}'
             copy_file(str(file_path), str(uuid_path))
             self.file_path = uuid_path
-            self.logger.info(f'Moved downloaded url "{self._new_dict["webpage_url"]}" to file "{uuid_path}"')
+            self.logger.info(f'Music :: :: Moved downloaded url "{self._new_dict["webpage_url"]}" to file "{uuid_path}"')
 
     def __getitem__(self, key):
         '''
@@ -538,28 +538,28 @@ class CacheFile():
         for item in self._data:
             item['file_path'] = Path(item['file_path'])
             if not item['file_path'].exists():
-                self.logger.warning(f'Cached file {str(item["file_path"])} does not exist, skipping')
+                self.logger.warning(f'Music :: :: Cached file {str(item["file_path"])} does not exist, skipping')
                 continue
             item['last_iterated_at'] = datetime.strptime(item['last_iterated_at'], CACHE_DATETIME_FORMAT)
             item['created_at'] = datetime.strptime(item['created_at'], CACHE_DATETIME_FORMAT)
             new_list.append(item)
         self._data = new_list
-        self.logger.info(f'Cache starting with data {self._data}')
+        self.logger.info(f'Music :: :: Cache starting with data {self._data}')
 
     def iterate_file(self, file_path):
         '''
         Bump file path
         file_path       :   Path of cached file
         '''
-        self.logger.info(f'Adding file path {str(file_path)} to cache file')
+        self.logger.info(f'Music :: Adding file path {str(file_path)} to cache file')
         for item in self._data:
             if item['file_path'] == file_path:
                 item['count'] += 1
                 item['last_iterated_at'] = datetime.utcnow()
-                self.logger.info(f'Cache entry existed for path {str(file_path)}, bumping')
+                self.logger.info(f'Music :: Cache entry existed for path {str(file_path)}, bumping')
                 return
         now = datetime.utcnow()
-        self.logger.info(f'Cache entry did not exist for path {str(file_path)}, creating now')
+        self.logger.info(f'Music :: Cache entry did not exist for path {str(file_path)}, creating now')
         self._data.append({
             'file_path': file_path,
             'count': 1,
@@ -573,9 +573,9 @@ class CacheFile():
         '''
         num_to_remove = len(self._data) - self.max_cache_files
         if num_to_remove < 1:
-            self.logger.info(f'Total cache files {len(self._data)} and max is {self.max_cache_files}, no need to remove files')
+            self.logger.info(f'Music :: Total cache files {len(self._data)} and max is {self.max_cache_files}, no need to remove files')
             return
-        self.logger.info(f'Need to remove {num_to_remove} cached files')
+        self.logger.info(f'Music :: Need to remove {num_to_remove} cached files')
         sorted_list = sorted(self._data, key=lambda k: (float(k['count']), k['last_iterated_at']), reverse=False)
         removed = 0
         remove_files = []
@@ -589,7 +589,7 @@ class CacheFile():
             new_list.append(item)
 
         for item in remove_files:
-            self.logger.info(f'Removing item from cache {item}')
+            self.logger.info(f'Music :: Removing item from cache {item}')
             if item['file_path'].exists():
                 item['file_path'].unlink()
         self._data = new_list
@@ -621,18 +621,18 @@ class DownloadClient():
         '''
         Prepare source from youtube url
         '''
-        self.logger.info(f'Starting download of video "{source_dict["search_string"]}"')
+        self.logger.info(f'Music :: Starting download of video "{source_dict["search_string"]}"')
         try:
             data = self.ytdl.extract_info(source_dict['search_string'], download=download)
         except DownloadError:
-            self.logger.warning(f'Error downloading youtube search "{source_dict["search_string"]}')
+            self.logger.warning(f'Music :: Error downloading youtube search "{source_dict["search_string"]}')
             return None
         # Make sure we get the first entry here
         # Since we don't pass "url" directly anymore
         try:
             data = data['entries'][0]
         except IndexError:
-            self.logger.warning(f'Error downloading youtube search "{source_dict["search_string"]}')
+            self.logger.warning(f'Music :: Error downloading youtube search "{source_dict["search_string"]}')
             return None
         except KeyError:
             pass
@@ -641,9 +641,9 @@ class DownloadClient():
         if download:
             try:
                 file_path = Path(data['requested_downloads'][0]['filepath'])
-                self.logger.info(f'Downloaded url "{data["webpage_url"]}" to file "{str(file_path)}"')
+                self.logger.info(f'Music :: Downloaded url "{data["webpage_url"]}" to file "{str(file_path)}"')
             except (KeyError, IndexError):
-                self.logger.warning(f'Unable to get filepath from ytdl data {data}')
+                self.logger.warning(f'Music :: Unable to get filepath from ytdl data {data}')
         return SourceFile(file_path, data, source_dict, self.logger)
 
     async def create_source(self, source_dict, loop, download=False):
@@ -656,16 +656,16 @@ class DownloadClient():
     def __check_spotify_source(self, playlist_id=None, album_id=None):
         data = []
         if playlist_id:
-            self.logger.debug(f'Checking for spotify playlist {playlist_id}')
+            self.logger.debug(f'Music :: Checking for spotify playlist {playlist_id}')
             response, data = self.spotify_client.playlist_get(playlist_id)
             if response.status_code != 200:
-                self.logger.warning(f'Unable to find spotify data {response.status_code}, {response.text}')
+                self.logger.warning(f'Music :: Unable to find spotify data {response.status_code}, {response.text}')
                 return []
         if album_id:
-            self.logger.debug(f'Checking for spotify album {album_id}')
+            self.logger.debug(f'Music :: Checking for spotify album {album_id}')
             response, data = self.spotify_client.album_get(album_id)
             if response.status_code != 200:
-                self.logger.warning(f'Unable to find spotify data {response.status_code}, {response.text}')
+                self.logger.warning(f'Music :: Unable to find spotify data {response.status_code}, {response.text}')
                 return []
         search_strings = []
         for item in data:
@@ -675,10 +675,10 @@ class DownloadClient():
 
     def __check_youtube_source(self, playlist_id=None):
         if playlist_id:
-            self.logger.debug(f'Checking youtube playlist id {playlist_id}')
+            self.logger.debug(f'Music :: Checking youtube playlist id {playlist_id}')
             response, data = self.youtube_client.playlist_list_items(playlist_id)
             if response.status_code != 200:
-                self.logger.warning(f'Unable to find youtube playlist {response.status_code}, {response.text}')
+                self.logger.warning(f'Music :: Unable to find youtube playlist {response.status_code}, {response.text}')
                 return []
             return data
         return []
@@ -699,7 +699,7 @@ class DownloadClient():
             search_strings = await loop.run_in_executor(None, to_run)
             if spotify_playlist_matcher.group('shuffle'):
                 random_shuffle(search_strings)
-            self.logger.debug(f'Gathered {len(search_strings)} from spotify playlist "{search}"')
+            self.logger.debug(f'Music :: Gathered {len(search_strings)} from spotify playlist "{search}"')
             return search_strings
 
         if spotify_album_matcher and self.spotify_client:
@@ -707,7 +707,7 @@ class DownloadClient():
             search_strings = await loop.run_in_executor(None, to_run)
             if spotify_album_matcher.group('shuffle'):
                 random_shuffle(search_strings)
-            self.logger.debug(f'Gathered {len(search_strings)} from spotify playlist "{search}"')
+            self.logger.debug(f'Music :: Gathered {len(search_strings)} from spotify playlist "{search}"')
             return search_strings
 
         if playlist_matcher and self.youtube_client:
@@ -715,7 +715,7 @@ class DownloadClient():
             search_strings = await loop.run_in_executor(None, to_run)
             if playlist_matcher.group('shuffle'):
                 random_shuffle(search_strings)
-            self.logger.debug(f'Gathered {len(search_strings)} from youtube playlist "{search}"')
+            self.logger.debug(f'Music :: Gathered {len(search_strings)} from youtube playlist "{search}"')
             return search_strings
         return [search]
 
@@ -882,7 +882,7 @@ class MusicPlayer:
             return
 
         delete_messages = await self.should_delete_messages()
-        self.logger.debug(f'Updating queue messages in channel {self.text_channel.id} in guild {self.guild.id}')
+        self.logger.debug(f'Music :: Updating queue messages in channel {self.text_channel.id} in guild {self.guild.id}')
         new_queue_strings = self.get_queue_message() or []
         if delete_messages:
             for queue_message in self.queue_messages:
@@ -909,8 +909,9 @@ class MusicPlayer:
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
+            # Await a sleep here just so other tasks can grab loop
+            await sleep(.01)
             if self.play_queue.shutdown:
-                await sleep(1)
                 continue
             source_dict = await self.download_queue.get()
 
@@ -919,24 +920,21 @@ class MusicPlayer:
             except SongTooLong:
                 await retry_discord_message_command(source_dict['message'].edit, content=f'Search "{source_dict["search_string"]}" exceeds maximum of {self.max_song_length} seconds, skipping',
                                                     delete_after=self.delete_after)
-                await sleep(1)
                 continue
             if source_download is None:
                 await retry_discord_message_command(source_dict['message'].edit, content=f'Issue downloading video "{source_dict["search_string"]}", skipping',
                                                     delete_after=self.delete_after)
-                await sleep(1)
                 continue
             try:
                 self.play_queue.put_nowait(source_download)
-                self.logger.info(f'Adding "{source_download["title"]}" '
+                self.logger.info(f'Music :: Adding "{source_download["title"]}" '
                                  f'to queue in guild {source_dict["guild_id"]}')
             except QueueFull:
                 await retry_discord_message_command(source_dict['message'].edit, content=f'Queue is full, cannot add "{source_download["title"]}"', delete_after=self.delete_after)
                 source_dict.delete()
-                await sleep(1)
                 continue
             except PutsBlocked:
-                self.logger.warning(f'Puts Blocked on queue in guild "{source_dict["guild_id"]}", assuming shutdown')
+                self.logger.warning(f'Music :: Puts Blocked on queue in guild "{source_dict["guild_id"]}", assuming shutdown')
                 await retry_discord_message_command(source_dict['message'].delete)
                 source_dict.delete()
                 continue
@@ -945,12 +943,11 @@ class MusicPlayer:
             await retry_discord_message_command(source_dict['message'].delete)
             # Iterate on cache file if exists
             if self.cache_file:
-                self.logger.info(f'Iterating file on original path {str(source_download["original_path"])}')
+                self.logger.info(f'Music :: Iterating file on original path {str(source_download["original_path"])}')
                 self.cache_file.iterate_file(source_download['original_path'])
                 self.logger.debug('Checking cache files to remove in music player')
                 self.cache_file.remove()
                 self.cache_file.write_file()
-            await sleep(1)
 
     def set_next(self, *_args, **_kwargs):
         '''
@@ -972,7 +969,7 @@ class MusicPlayer:
                 async with timeout(self.disconnect_timeout):
                     source_dict = await self.play_queue.get()
             except asyncio_timeout:
-                self.logger.info(f'Music bot reached timeout on queue in guild "{self.guild.name}"')
+                self.logger.info(f'Music :: bot reached timeout on queue in guild "{self.guild.name}"')
                 return await self.destroy(self.guild)
 
             self.current_path = source_dict['file_path']
@@ -988,9 +985,9 @@ class MusicPlayer:
             try:
                 self.guild.voice_client.play(source, after=self.set_next) #pylint:disable=line-too-long
             except AttributeError:
-                self.logger.info(f'No voice client found, disconnecting from guild {self.guild.name}')
+                self.logger.info(f'Music :: No voice client found, disconnecting from guild {self.guild.name}')
                 return await self.destroy(self.guild)
-            self.logger.info(f'Music bot now playing "{source_dict["title"]}" requested '
+            self.logger.info(f'Music :: bot now playing "{source_dict["title"]}" requested '
                              f'by "{source_dict["requester"]}" in guild {self.guild.id}, url '
                              f'"{source_dict["webpage_url"]}"')
             self.np_message = f'Now playing {source_dict["webpage_url"]} requested by {source_dict["requester"]}'
@@ -1022,8 +1019,8 @@ class MusicPlayer:
         # Block puts first on download queue
         self.download_queue.block()
         self.play_queue.block()
-        # Wait a second to ensure we have the block set
-        await sleep(1)
+        # Wait to ensure we have the block set
+        await sleep(.5)
         messages = []
         # Delete any messages from download queue
         # Delete any files in play queue that are already added
@@ -1069,7 +1066,7 @@ class MusicPlayer:
         '''
         Disconnect and cleanup the player.
         '''
-        self.logger.info(f'Removing music bot from guild "{self.guild.name}"')
+        self.logger.info(f'Music :: Removing music bot from guild "{self.guild.name}"')
         await self.cog_cleanup(guild)
 
 
@@ -1270,17 +1267,17 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             if vc.channel.id == channel.id:
                 return
             try:
-                self.logger.info(f'Music bot moving to channel {channel.id} '
+                self.logger.info(f'Music :: bot moving to channel {channel.id} '
                                  f'in guild {ctx.guild.id}')
                 await vc.move_to(channel)
             except asyncio_timeout:
-                self.logger.warning(f'Moving to channel {channel.id} timed out')
+                self.logger.warning(f'Music :: Moving to channel {channel.id} timed out')
                 return await retry_discord_message_command(ctx.send, f'Moving to channel: <{channel}> timed out.')
         else:
             try:
                 await channel.connect()
             except asyncio_timeout:
-                self.logger.error(f'Connecting to channel {channel.id} timed out')
+                self.logger.error(f'Music :: Connecting to channel {channel.id} timed out')
                 return await retry_discord_message_command(ctx.send, f'Connecting to channel: <{channel}> timed out.')
 
         await retry_discord_message_command(ctx.send, f'Connected to: {channel}', delete_after=self.delete_after)
@@ -1314,11 +1311,11 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         for entry in entries:
             try:
                 message = await retry_discord_message_command(ctx.send, f'Downloading and processing "{entry["search_string"]}"')
-                self.logger.debug(f'Handing off entry {entry} to download queue')
+                self.logger.debug(f'Music :: Handing off entry {entry} to download queue')
                 entry['message'] = message
                 player.download_queue.put_nowait(entry)
             except PutsBlocked:
-                self.logger.warning(f'Puts to queue in guild {ctx.guild.id} are currently blocked, assuming shutdown')
+                self.logger.warning(f'Music :: Puts to queue in guild {ctx.guild.id} are currently blocked, assuming shutdown')
                 await retry_discord_message_command(message.delete)
                 return
             except QueueFull:
@@ -1601,7 +1598,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             self.db_session.commit()
             await retry_discord_message_command(ctx.send, f'Unable to create playlist "{name}", name likely already exists')
             return None
-        self.logger.info(f'Playlist created "{playlist.name}" with ID {playlist.id} in guild {ctx.guild.id}')
+        self.logger.info(f'Music :: Playlist created "{playlist.name}" with ID {playlist.id} in guild {ctx.guild.id}')
         await retry_discord_message_command(ctx.send, f'Created playlist "{name}"',
                                             delete_after=self.delete_after)
         return playlist
@@ -1665,7 +1662,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             await retry_discord_message_command(ctx.send, mess, delete_after=self.delete_after)
 
     def __playlist_add_item(self, playlist, data_id, data_title, data_uploader, ignore_fail=False):
-        self.logger.info(f'Adding video_id {data_id} to playlist {playlist.id}')
+        self.logger.info(f'Music :: Adding video_id {data_id} to playlist {playlist.id}')
         item_count = self.db_session.query(PlaylistItem).filter(PlaylistItem.playlist_id == playlist.id).count()
         if item_count >= (self.server_playlist_max):
             raise PlaylistMaxLength(f'Playlist {playlist.id} greater to or equal to max length {self.server_playlist_max}')
@@ -1726,7 +1723,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             if source_dict is None:
                 await retry_discord_message_command(ctx.send, f'Unable to find video for search {search}')
                 continue
-            self.logger.info(f'Adding video_id {source_dict["id"]} to playlist "{playlist.name}" '
+            self.logger.info(f'Music :: Adding video_id {source_dict["id"]} to playlist "{playlist.name}" '
                              f' in guild {ctx.guild.id}')
             try:
                 playlist_item = self.__playlist_add_item(playlist, source_dict['id'], source_dict['title'], source_dict['uploader'])
@@ -1909,7 +1906,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
             return None
-        self.logger.info(f'Deleting playlist items "{playlist.name}"')
+        self.logger.info(f'Music :: Deleting playlist items "{playlist.name}"')
         self.db_session.query(PlaylistItem).\
             filter(PlaylistItem.playlist_id == playlist.id).delete()
         self.db_session.delete(playlist)
@@ -1937,7 +1934,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
             return None
-        self.logger.info(f'Renaming playlist {playlist.id} to name "{playlist_name}"')
+        self.logger.info(f'Music :: Renaming playlist {playlist.id} to name "{playlist_name}"')
         playlist.name = playlist_name
         self.db_session.commit()
         return await retry_discord_message_command(ctx.send, f'Renamed playlist {playlist_index} to name "{playlist_name}"', delete_after=self.delete_after)
@@ -1978,7 +1975,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         else:
             queue_copy = deepcopy(player.play_queue._queue) #pylint:disable=protected-access
 
-        self.logger.info(f'Saving queue contents to playlist "{name}", is_history? {is_history}')
+        self.logger.info(f'Music :: Saving queue contents to playlist "{name}", is_history? {is_history}')
 
         if len(queue_copy) == 0:
             return await retry_discord_message_command(ctx.send, 'There are no songs to add to playlist',
@@ -2066,7 +2063,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             vc = ctx.voice_client
         player = await self.get_player(ctx, vc.channel)
 
-        self.logger.info(f'Playlist queue called for playlist "{playlist.name}" in server "{ctx.guild.id}"')
+        self.logger.info(f'Music :: Playlist queue called for playlist "{playlist.name}" in server "{ctx.guild.id}"')
         query = self.db_session.query(PlaylistItem).\
             filter(PlaylistItem.playlist_id == playlist.id)
         playlist_items = []
@@ -2146,7 +2143,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         player = await self.get_player(ctx, vc.channel)
 
-        self.logger.info(f'Playlist cleanup called on index "{playlist_index}" in server "{ctx.guild.id}"')
+        self.logger.info(f'Music :: Playlist cleanup called on index "{playlist_index}" in server "{ctx.guild.id}"')
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
             return None
@@ -2161,13 +2158,13 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             }
             source_dict = await player.download_client.create_source(entry, self.bot.loop, download=False)
             if source_dict is None:
-                self.logger.info(f'Unable to find source for "{item.title}", removing from database')
+                self.logger.info(f'Music :: Unable to find source for "{item.title}", removing from database')
                 await retry_discord_message_command(ctx.send, f'Unable to find youtube source ' \
                                          f'for "{item.title}", "{item.video_id}", removing item from database',
                                          delete_after=self.delete_after)
                 self.db_session.delete(item)
                 self.db_session.commit()
-        self.logger.info(f'Finished cleanup for all items in playlist "{playlist.id}"')
+        self.logger.info(f'Music :: Finished cleanup for all items in playlist "{playlist.id}"')
         await retry_discord_message_command(ctx.send, f'Checked all songs in playlist "{playlist.name}"',
                                  delete_after=self.delete_after)
 
@@ -2188,7 +2185,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not await self.__check_database_session(ctx):
             return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
 
-        self.logger.info(f'Calling playlist merge of "{playlist_index_one}" and "{playlist_index_two}" in server "{ctx.guild.id}"')
+        self.logger.info(f'Music :: Calling playlist merge of "{playlist_index_one}" and "{playlist_index_two}" in server "{ctx.guild.id}"')
         playlist_one = await self.__get_playlist(playlist_index_one, ctx)
         playlist_two = await self.__get_playlist(playlist_index_two, ctx)
         if not playlist_one:

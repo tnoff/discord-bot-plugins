@@ -29,3 +29,5 @@ disable=logging-fstring-interpolation,
         unspecified-encoding,
         too-many-return-statements,
         unnecessary-lambda-assignment,
+        # Similar lines
+        R0801,
