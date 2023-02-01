@@ -133,7 +133,7 @@ class Markov(CogHelper):
 
     def __ensure_word(self, word):
         if len(word) >= MAX_WORD_LENGTH:
-            self.logger.warning(f'Cannot add word "{word}", is too long')
+            self.logger.warning(f'Markov :: Cannot add word "{word}", is too long')
             return None
         return word
 
@@ -167,16 +167,15 @@ class Markov(CogHelper):
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
-            self.logger.debug('Markov - Entering message gather loop')
             retention_cutoff = datetime.utcnow() - timedelta(days= self.history_retention_days)
-            self.logger.debug(f'Using cutoff {retention_cutoff} for markov bot')
+            self.logger.debug(f'Markov :: Entering message gather loop, using cutoff {retention_cutoff}')
 
             for markov_channel in self.db_session.query(MarkovChannel).all():
                 await sleep(.01) # Sleep one second just in case someone called a command
                 channel = await self.bot.fetch_channel(markov_channel.channel_id)
                 server = await self.bot.fetch_guild(markov_channel.server_id)
                 emoji_ids = [emoji.id for emoji in await server.fetch_emojis()]
-                self.logger.info('Gathering markov messages for '
+                self.logger.info('Markov :: Gathering markov messages for '
                                  f'channel {markov_channel.channel_id}')
                 # Start at the beginning of channel history,
                 # slowly make your way make to current day
@@ -187,8 +186,8 @@ class Markov(CogHelper):
                         last_message = await retry_discord_message_command(channel.fetch_message, markov_channel.last_message_id)
                         messages = [m async for m in retry_discord_message_command(channel.history(after=last_message, limit=self.message_check_limit))]
                     except NotFound:
-                        self.logger.error(f'Unable to find message {markov_channel.last_message_id}'
-                                          f' in channel {markov_channel.id}')
+                        self.logger.warning(f'Markov :: Unable to find message {markov_channel.last_message_id}'
+                                            f' in channel {markov_channel.id}')
                         # Last message on record not found
                         # If this happens, wipe the channel clean and restart
                         self._delete_channel_relations(markov_channel.id)
@@ -198,12 +197,12 @@ class Markov(CogHelper):
                         continue
 
                 if len(messages) == 0:
-                    self.logger.debug(f'No new messages for channel {markov_channel.channel_id}')
+                    self.logger.debug(f'Markov :: No new messages for channel {markov_channel.channel_id}')
                     continue
 
 
                 for message in messages:
-                    self.logger.debug(f'Gathering message {message.id} '
+                    self.logger.debug(f'Markov :: Gathering message {message.id} '
                                       f'for channel {markov_channel.channel_id}')
                     add_message = True
                     if not message.content or message.author.bot:
@@ -219,14 +218,12 @@ class Markov(CogHelper):
                         self.__build_and_save_relations(corpus, markov_channel, message.created_at)
                     markov_channel.last_message_id = str(message.id)
                     self.db_session.commit()
-                self.logger.debug(f'Done with channel {markov_channel.channel_id}')
+                self.logger.debug(f'Markov :: Done with channel {markov_channel.channel_id}')
 
             # Clean up old messages
-            self.logger.debug('Attempting to delete old relations')
             self.db_session.query(MarkovRelation).filter(MarkovRelation.created_at < retention_cutoff).delete()
             self.db_session.commit()
-            # Wait until next loop
-            self.logger.debug('Waiting 5 minutes for next markov iteration')
+            self.logger.debug('Markov :: Deleted expired/old markov relations')
             await sleep(self.loop_sleep_interval) # Every 5 minutes
 
     @commands.group(name='markov', invoke_without_command=False)
@@ -262,7 +259,7 @@ class Markov(CogHelper):
                                    last_message_id=None)
         self.db_session.add(new_markov)
         self.db_session.commit()
-        self.logger.info(f'Adding new markov channel {ctx.channel.id} from server {ctx.guild.id}')
+        self.logger.info(f'Markov :: Adding new markov channel {ctx.channel.id} from server {ctx.guild.id}')
         return await ctx.send('Markov turned on for channel')
 
     @markov.command(name='off')
@@ -280,7 +277,7 @@ class Markov(CogHelper):
 
         if not markov_channel:
             return await ctx.send('Channel does not have markov turned on')
-        self.logger.info(f'Turning off markov channel {ctx.channel.id} from server {ctx.guild.id}')
+        self.logger.info(f'Markov :: Turning off markov channel {ctx.channel.id} from server {ctx.guild.id}')
 
         self._delete_channel_relations(markov_channel.id)
         self.db_session.delete(markov_channel)
@@ -305,7 +302,7 @@ class Markov(CogHelper):
         if not await self.check_user_role(ctx):
             return await ctx.send('Unable to verify user role, ignoring command')
 
-        self.logger.info(f'Calling speak on server {ctx.guild.id}')
+        self.logger.info(f'Markov :: Calling speak on server {ctx.guild.id}')
         all_words = []
         first = None
         if first_word:

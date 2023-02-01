@@ -98,7 +98,7 @@ class RoleAssignment(CogHelper):
             # Save any you should delete
             will_delete = []
             for assignment_message in self.db_session.query(RoleAssignmentMessage).all():
-                self.logger.info(f'Checking assignment message {assignment_message.id}')
+                self.logger.info(f'Role :: Checking assignment message {assignment_message.id}')
                 guild = await self.bot.fetch_guild(int(assignment_message.server_id))
                 try:
                     message = message_cache[assignment_message.message_id]
@@ -107,14 +107,14 @@ class RoleAssignment(CogHelper):
                     try:
                         message = await channel.fetch_message(int(assignment_message.message_id))
                     except NotFound:
-                        self.logger.error(f'Unable to find message {assignment_message.id}'
+                        self.logger.error(f'Role :: Unable to find message {assignment_message.id}'
                                           ' going to delete db entry')
                         will_delete.append(assignment_message)
                         continue
                     delta = datetime.utcnow() - message.created_at
                     delta_seconds = (delta.days * 60 * 60 * 24) + delta.seconds
                     if delta_seconds > self.message_expiry_timeout:
-                        self.logger.info(f'Message "{message.id}" reached expiry, deleting')
+                        self.logger.info(f'Role :: Message "{message.id}" reached expiry, deleting')
                         self.db_session.query(RoleAssignmentReaction).\
                             filter(RoleAssignmentReaction.role_assignment_message_id == assignment_message.id).delete()
                         await message.delete()
@@ -132,8 +132,8 @@ class RoleAssignment(CogHelper):
 
                 # Find reactions to the mssage
                 for reaction in message.reactions:
-                    self.logger.debug(f'Checking reaction {reaction} ' \
-                                 f'for message {assignment_message.id}')
+                    self.logger.debug(f'Role :: Checking reaction {reaction} ' \
+                                      f'for message {assignment_message.id}')
 
                     # Get role reaction mapping
                     role_id = reaction_dict[EMOJI_MAPPING[reaction.emoji]]
@@ -147,12 +147,12 @@ class RoleAssignment(CogHelper):
                     async for user in reaction.users():
                         member = await guild.fetch_member(int(user.id))
                         if not member:
-                            self.logger.error(f'Unable to read member for user {user.id} '\
+                            self.logger.error(f'Role :: Unable to read member for user {user.id} '\
                                               f'in guild {guild.id}, likely a permissions issue')
                             continue
                         if role not in member.roles:
                             await member.add_roles(role)
-                            self.logger.info(f'Adding role {role.name} to user {user.name}')
+                            self.logger.info(f'Role :: Adding role {role.name} to user {user.name}')
 
             # Delete all messages we could not find earlier
             for assignment_message in will_delete:
@@ -171,7 +171,7 @@ class RoleAssignment(CogHelper):
         '''
         if not await self.check_user_role(ctx):
             return await ctx.send('Unable to verify user role, ignoring command')
-        self.logger.debug(f'Setting up message for role grants in server {ctx.guild.id}')
+        self.logger.debug(f'Role :: Setting up message for role grants in server {ctx.guild.id}')
         index = 0
         message_strings = []
         message_string = 'React with the following emojis to be automatically granted roles'
@@ -204,10 +204,10 @@ class RoleAssignment(CogHelper):
                                                 server_id=str(message.guild.id))
             self.db_session.add(new_message)
             self.db_session.commit()
-            self.logger.info(f'Created new role assignment message {new_message.id}')
+            self.logger.info(f'Role :: Created new role assignment message {new_message.id}')
             for role_assign in role_assign_list:
                 role_assign['role_assignment_message_id'] = new_message.id
                 assignment = RoleAssignmentReaction(**role_assign)
                 self.db_session.add(assignment)
                 self.db_session.commit()
-                self.logger.info(f'Created new role assignment reaction {assignment.id}')
+                self.logger.info(f'Role :: Created new role assignment reaction {assignment.id}')
