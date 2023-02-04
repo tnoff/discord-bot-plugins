@@ -2088,8 +2088,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 await retry_discord_message_command(ctx.send, f'Invalid number of songs {max_num}',
                                                     delete_after=self.delete_after)
                 return
-            if max_num <= len(playlist_items):
+            if max_num < len(playlist_items):
                 playlist_items = playlist_items[:max_num]
+            else:
+                max_num = 0
 
         broke_early = False
         for item in playlist_items:
@@ -2112,9 +2114,12 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if broke_early:
             await retry_discord_message_command(ctx.send, f'Added as many songs in playlist "{playlist.name}" to queue as possible, but hit limit',
                                      delete_after=self.delete_after)
+        elif max_num:
+            await retry_discord_message_command(ctx.send, f'Added {max_num} songs from "{playlist.name}" to queue',
+                                                delete_after=self.delete_after)
         else:
             await retry_discord_message_command(ctx.send, f'Added all songs in playlist "{playlist.name}" to queue',
-                                     delete_after=self.delete_after)
+                                                delete_after=self.delete_after)
         playlist.last_queued = datetime.utcnow()
         self.db_session.commit()
 
