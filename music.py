@@ -1629,7 +1629,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not await self.__check_database_session(ctx):
             return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
         playlist_items = self.db_session.query(Playlist).\
-            filter(Playlist.server_id == str(ctx.guild.id))
+            filter(Playlist.server_id == str(ctx.guild.id)).order_by(Playlist.created_at.asc())
         playlist_items = [p for p in playlist_items if '__playhistory__' not in p.name]
 
         if not playlist_items:
