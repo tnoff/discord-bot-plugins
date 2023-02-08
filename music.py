@@ -995,7 +995,7 @@ class MusicPlayer:
             self.song_skipped = False
             audio_source.volume = self.volume
             try:
-                self.guild.voice_client.play(source, after=self.set_next) #pylint:disable=line-too-long
+                self.guild.voice_client.play(audio_source, after=self.set_next) #pylint:disable=line-too-long
             except AttributeError:
                 self.logger.info(f'Music :: No voice client found, disconnecting from guild {self.guild.name}')
                 return await self.destroy(self.guild)
@@ -1178,9 +1178,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             player = self.players[guild.id]
         except KeyError:
             return
-
-        if player.current_path and player.current_path.exists():
-            player.current_path.unlink()
 
         await player.clear_queue_messages()
 
