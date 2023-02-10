@@ -1329,6 +1329,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 return
             except QueueFull:
                 await retry_discord_message_command(ctx.send, f'Unable to add "{search}" to queue, download queue is full', delete_after=self.delete_after)
+                await retry_discord_message_command(message.delete)
                 return
 
     @commands.command(name='skip')
@@ -2116,7 +2117,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 })
             except QueueFull:
                 await retry_discord_message_command(ctx.send, f'Unable to add item "{item.title}" with id "{item.video_id}" to queue, queue is full',
-                                         delete_after=self.delete_after)
+                                                    delete_after=self.delete_after)
+                await retry_discord_message_command(message.delete)
                 broke_early = True
                 break
         if broke_early:
