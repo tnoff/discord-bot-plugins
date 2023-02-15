@@ -931,7 +931,7 @@ class MusicPlayer:
                 await retry_discord_message_command(source_dict['message'].edit,
                                                     content=f'Search "{source_dict["search_string"]}" exceeds maximum of {self.max_song_length} seconds, skipping',
                                                     delete_after=self.delete_after)
-                self.logger.warning(f'Music ::: Song too long to play in queue, skipping "{source_dict["id"]}"')
+                self.logger.warning(f'Music ::: Song too long to play in queue, skipping "{source_dict["search_string"]}"')
                 continue
             if source_download is None:
                 await retry_discord_message_command(source_dict['message'].edit, content=f'Issue downloading video "{source_dict["search_string"]}", skipping',
