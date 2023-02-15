@@ -544,7 +544,7 @@ class CacheFile():
             item['created_at'] = datetime.strptime(item['created_at'], CACHE_DATETIME_FORMAT)
             new_list.append(item)
         self._data = new_list
-        self.logger.info(f'Music :: :: Cache starting with data {self._data}')
+        self.logger.info(f'Music :: :: Cache created with {len(self._data)} items')
 
     def iterate_file(self, file_path):
         '''
@@ -918,6 +918,7 @@ class MusicPlayer:
             source_dict = await self.download_queue.get()
             self.logger.debug(f'Music ::: Gathered new item to download "{source_dict["search_string"]}"')
 
+            # Check if queue is full before attempting to download file
             if self.play_queue.full():
                 self.logger.warning(f'Music ::: Play queue full, aborting download of item "{source_dict["search_string"]}"')
                 await retry_discord_message_command(source_dict['message'].edit,
