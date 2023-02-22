@@ -968,6 +968,7 @@ class MusicPlayer:
         '''
         Used for loop to call once voice channel done
         '''
+        self.logger.info(f'Music :: Set next called on player in guild "{self.guild.name}"')
         self.next.set()
 
     async def player_loop(self):
@@ -1150,10 +1151,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         '''
         Run when cog stops
         '''
-        guild_list = list(self.players.keys())
-        for guild in guild_list:
-            await self.cleanup(guild)
-        # Only remove download dir if cache not enabled
         if self.download_dir.exists() and not self.enable_cache:
             rm_tree(self.download_dir)
 
@@ -1345,7 +1342,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         if not vc or not vc.is_connected():
             return await retry_discord_message_command(ctx.send, 'I am not currently playing anything',
-                                            delete_after=self.delete_after)
+                                                       delete_after=self.delete_after)
 
         player = await self.get_player(ctx, vc.channel)
         if not vc.is_paused() and not vc.is_playing():
@@ -2119,6 +2116,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 await retry_discord_message_command(message.edit, content=f'Unable to add item "{item.title}" with id "{item.video_id}" to queue, queue is full',
                                                     delete_after=self.delete_after)
                 broke_early = True
+                break
+            except PutsBlocked:
+                self.logger.warning(f'Music :: Puts to queue in guild {ctx.guild.id} are currently blocked, assuming shutdown')
+                await retry_discord_message_command(message.delete)
                 break
         if broke_early:
             await retry_discord_message_command(ctx.send, f'Added as many songs in playlist "{playlist.name}" to queue as possible, but hit limit',
