@@ -233,22 +233,6 @@ class PlaylistMaxLength(Exception):
     '''
     Playlist hit max length
     '''
-
-class DownloadedFileMissing(Exception):
-    '''
-    DownloadedFile Somehow Missing
-    '''
-
-class SpotifyClientException(Exception):
-    '''
-    Issue with spotify client
-    '''
-
-class LockFileException(Exception):
-    '''
-    Issue gathering lockfile
-    '''
-
 #
 # Spotify Client
 #
@@ -287,7 +271,7 @@ class SpotifyClient():
             'client_secret': self.client_secret,
         }, timeout=REQUESTS_TIMEOUT)
         if auth_response.status_code != 200:
-            raise SpotifyClientException(f'Error getting auth token {auth_response.status_code}, {auth_response.text}')
+            raise Exception(f'Error getting auth token {auth_response.status_code}, {auth_response.text}')
         data = auth_response.json()
         self._token = data['access_token']
         self._expiry = datetime.now() + timedelta(seconds=data['expires_in'])
@@ -479,9 +463,6 @@ class SourceFile():
             # Touch here to update the modified time, so that the cleanup check works as intendend
             # Rename file to a random uuid name, that way we can have diff videos with same/similar names
             uuid_path = file_path.parent / f'{source_dict["guild_id"]}' / f'{uuid4()}{"".join(i for i in file_path.suffixes)}'
-            # Copy file so we can ensure we have a file to use in the guild dir
-            # This is because there is a possibility the cache will remove the file
-            # If you notice this happening, you'll probably want to clear the cache or increase the limit
             copy_file(str(file_path), str(uuid_path))
             self.file_path = uuid_path
             self.logger.info(f'Music :: :: Moved downloaded url "{self._new_dict["webpage_url"]}" to file "{uuid_path}"')
@@ -660,11 +641,6 @@ class DownloadClient():
         if download:
             try:
                 file_path = Path(data['requested_downloads'][0]['filepath'])
-                # It seems that sometimes the file is downloaded but the bot is stopped in editing
-                # And we get a strange race condition where yt-dlp sees the file as downloaded but does not edit it
-                if not file_path.exists():
-                    self.logger.error(f'Music :: Downloaded url "{data["webpage_url"]}" not properly saved to file "{str(file_path)}"')
-                    raise DownloadedFileMissing(f'File path missing "{str(file_path)}"')
                 self.logger.info(f'Music :: Downloaded url "{data["webpage_url"]}" to file "{str(file_path)}"')
             except (KeyError, IndexError):
                 self.logger.warning(f'Music :: Unable to get filepath from ytdl data {data}')
@@ -817,7 +793,7 @@ class MusicPlayer:
         start = datetime.now()
         while True:
             if (datetime.now() - start).seconds > wait_timeout:
-                raise LockFileException('Error acquiring player lock lock')
+                raise Exception('Error acquiring player lock lock')
             if self.lock_file.read_text() == 'locked':
                 await sleep(.5)
                 continue
@@ -957,12 +933,6 @@ class MusicPlayer:
                                                     content=f'Search "{source_dict["search_string"]}" exceeds maximum of {self.max_song_length} seconds, skipping',
                                                     delete_after=self.delete_after)
                 self.logger.warning(f'Music ::: Song too long to play in queue, skipping "{source_dict["search_string"]}"')
-                continue
-            except DownloadedFileMissing:
-                await retry_discord_message_command(source_dict['message'].edit,
-                                                    content=f'Search "{source_dict["search_string"]}" unable to download, please try again',
-                                                    delete_after=self.delete_after)
-                self.logger.warning(f'Music ::: Search "{source_dict["search_string"]}" failed to missing download, likely will work with a retry')
                 continue
             if source_download is None:
                 await retry_discord_message_command(source_dict['message'].edit, content=f'Issue downloading video "{source_dict["search_string"]}", skipping',
@@ -2151,17 +2121,14 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 self.logger.warning(f'Music :: Puts to queue in guild {ctx.guild.id} are currently blocked, assuming shutdown')
                 await retry_discord_message_command(message.delete)
                 break
-        playlist_name = playlist.name
-        if '__playhistory__' in playlist.name:
-            playlist_name = 'Playlist History'
         if broke_early:
-            await retry_discord_message_command(ctx.send, f'Added as many songs in playlist "{playlist_name}" to queue as possible, but hit limit',
+            await retry_discord_message_command(ctx.send, f'Added as many songs in playlist "{playlist.name}" to queue as possible, but hit limit',
                                                 delete_after=self.delete_after)
         elif max_num:
-            await retry_discord_message_command(ctx.send, f'Added {max_num} songs from "{playlist_name}" to queue',
+            await retry_discord_message_command(ctx.send, f'Added {max_num} songs from "{playlist.name}" to queue',
                                                 delete_after=self.delete_after)
         else:
-            await retry_discord_message_command(ctx.send, f'Added all songs in playlist "{playlist_name}" to queue',
+            await retry_discord_message_command(ctx.send, f'Added all songs in playlist "{playlist.name}" to queue',
                                                 delete_after=self.delete_after)
         playlist.last_queued = datetime.utcnow()
         self.db_session.commit()
