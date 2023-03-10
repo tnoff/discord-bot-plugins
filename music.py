@@ -831,7 +831,7 @@ class MusicPlayer:
                 source.delete()
             except QueueEmpty:
                 break
-        if self._player_task and keep_play_queue:
+        if self._player_task and not keep_play_queue:
             self._player_task.cancel()
             self._player_task = None
         if self._download_task:
