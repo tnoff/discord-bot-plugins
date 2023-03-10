@@ -482,7 +482,9 @@ class SourceFile():
             # Touch here to update the modified time, so that the cleanup check works as intendend
             # Rename file to a random uuid name, that way we can have diff videos with same/similar names
             uuid_path = file_path.parent / f'{source_dict["guild_id"]}' / f'{uuid4()}{"".join(i for i in file_path.suffixes)}'
-            copy_file(str(file_path), str(uuid_path))
+            # We should either symlink or copy the file here
+            # That way we can handle a case in which the original download was removed from cache
+            uuid_path.symlink_to(original_path)
             self.file_path = uuid_path
             self.logger.info(f'Music :: :: Moved downloaded url "{self._new_dict["webpage_url"]}" to file "{uuid_path}"')
 
@@ -1063,7 +1065,7 @@ class MusicPlayer:
             await self.update_queue_strings()
 
             await self.next.wait()
-
+            self.np_message = ''
             # Make sure the FFmpeg process is cleaned up.
             audio_source.cleanup()
             source.delete()
@@ -1078,7 +1080,6 @@ class MusicPlayer:
 
             # If play queue empty, set np message to nill
             if self.play_queue.empty() and self.download_queue.empty():
-                self.np_message = ''
                 await self.update_queue_strings()
 
     async def clear_remaining_queue(self):
