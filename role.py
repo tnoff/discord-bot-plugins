@@ -64,6 +64,13 @@ class RoleAssignmentReaction(BASE):
     emoji_name = Column(String(64))
     role_assignment_message_id = Column(Integer, ForeignKey('role_assignment_message.id'))
 
+
+class ExitEarlyException(Exception):
+    '''
+    Exit early from tasks
+    '''
+
+
 class RoleAssignment(CogHelper):
     '''
     Function to add message users can react to get assignment.
@@ -94,74 +101,85 @@ class RoleAssignment(CogHelper):
         role_cache = {}
 
         while not self.bot.is_closed():
-            # Go through each saved message in database
-            # Save any you should delete
-            will_delete = []
-            for assignment_message in self.db_session.query(RoleAssignmentMessage).all():
-                self.logger.info(f'Role :: Checking assignment message {assignment_message.id}')
-                guild = await self.bot.fetch_guild(int(assignment_message.server_id))
+            try:
+                await self.__main_loop(message_cache, role_cache)
+            except ExitEarlyException:
+                return
+            except Exception as e:
+                self.logger.exception(e)
+                print(f'Player loop exception {str(e)}')
+                return
+
+    async def __main_loop(self, message_cache, role_cache):
+
+        # Go through each saved message in database
+        # Save any you should delete
+        will_delete = []
+        for assignment_message in self.db_session.query(RoleAssignmentMessage).all():
+            self.logger.info(f'Role :: Checking assignment message {assignment_message.id}')
+            guild = await self.bot.fetch_guild(int(assignment_message.server_id))
+            try:
+                message = message_cache[assignment_message.message_id]
+            except KeyError:
+                channel = self.bot.get_channel(int(assignment_message.channel_id))
                 try:
-                    message = message_cache[assignment_message.message_id]
+                    message = await channel.fetch_message(int(assignment_message.message_id))
+                except NotFound:
+                    self.logger.error(f'Role :: Unable to find message {assignment_message.id}'
+                                        ' going to delete db entry')
+                    will_delete.append(assignment_message)
+                    continue
+                delta = datetime.utcnow() - message.created_at
+                delta_seconds = (delta.days * 60 * 60 * 24) + delta.seconds
+                if delta_seconds > self.message_expiry_timeout:
+                    self.logger.info(f'Role :: Message "{message.id}" reached expiry, deleting')
+                    self.db_session.query(RoleAssignmentReaction).\
+                        filter(RoleAssignmentReaction.role_assignment_message_id == assignment_message.id).delete()
+                    await message.delete()
+                    self.db_session.delete(assignment_message)
+                    self.db_session.commit()
+                    continue
+                message_cache[assignment_message.message_id] = message
+
+            # Get mapping of what reactions should go with which role
+            reaction_dict = {}
+            for role_reaction in self.db_session.query(RoleAssignmentReaction).\
+                filter(RoleAssignmentReaction.role_assignment_message_id == assignment_message.id): #pylint:disable=line-too-long
+                reaction_dict[role_reaction.emoji_name] = role_reaction.role_id
+
+
+            # Find reactions to the mssage
+            for reaction in message.reactions:
+                self.logger.debug(f'Role :: Checking reaction {reaction} ' \
+                                    f'for message {assignment_message.id}')
+
+                # Get role reaction mapping
+                role_id = reaction_dict[EMOJI_MAPPING[reaction.emoji]]
+                try:
+                    role = role_cache[role_id]
                 except KeyError:
-                    channel = self.bot.get_channel(int(assignment_message.channel_id))
-                    try:
-                        message = await channel.fetch_message(int(assignment_message.message_id))
-                    except NotFound:
-                        self.logger.error(f'Role :: Unable to find message {assignment_message.id}'
-                                          ' going to delete db entry')
-                        will_delete.append(assignment_message)
+                    role = guild.get_role(int(role_id))
+                    role_cache[role_id] = role
+
+                # Check for users in reaction
+                async for user in reaction.users():
+                    member = await guild.fetch_member(int(user.id))
+                    if not member:
+                        self.logger.error(f'Role :: Unable to read member for user {user.id} '\
+                                            f'in guild {guild.id}, likely a permissions issue')
                         continue
-                    delta = datetime.utcnow() - message.created_at
-                    delta_seconds = (delta.days * 60 * 60 * 24) + delta.seconds
-                    if delta_seconds > self.message_expiry_timeout:
-                        self.logger.info(f'Role :: Message "{message.id}" reached expiry, deleting')
-                        self.db_session.query(RoleAssignmentReaction).\
-                            filter(RoleAssignmentReaction.role_assignment_message_id == assignment_message.id).delete()
-                        await message.delete()
-                        self.db_session.delete(assignment_message)
-                        self.db_session.commit()
-                        continue
-                    message_cache[assignment_message.message_id] = message
+                    if role not in member.roles:
+                        await member.add_roles(role)
+                        self.logger.info(f'Role :: Adding role {role.name} to user {user.name}')
 
-                # Get mapping of what reactions should go with which role
-                reaction_dict = {}
-                for role_reaction in self.db_session.query(RoleAssignmentReaction).\
-                    filter(RoleAssignmentReaction.role_assignment_message_id == assignment_message.id): #pylint:disable=line-too-long
-                    reaction_dict[role_reaction.emoji_name] = role_reaction.role_id
-
-
-                # Find reactions to the mssage
-                for reaction in message.reactions:
-                    self.logger.debug(f'Role :: Checking reaction {reaction} ' \
-                                      f'for message {assignment_message.id}')
-
-                    # Get role reaction mapping
-                    role_id = reaction_dict[EMOJI_MAPPING[reaction.emoji]]
-                    try:
-                        role = role_cache[role_id]
-                    except KeyError:
-                        role = guild.get_role(int(role_id))
-                        role_cache[role_id] = role
-
-                    # Check for users in reaction
-                    async for user in reaction.users():
-                        member = await guild.fetch_member(int(user.id))
-                        if not member:
-                            self.logger.error(f'Role :: Unable to read member for user {user.id} '\
-                                              f'in guild {guild.id}, likely a permissions issue')
-                            continue
-                        if role not in member.roles:
-                            await member.add_roles(role)
-                            self.logger.info(f'Role :: Adding role {role.name} to user {user.name}')
-
-            # Delete all messages we could not find earlier
-            for assignment_message in will_delete:
-                # Delete reactions first
-                self.db_session.query(RoleAssignmentReaction).\
-                    filter(RoleAssignmentReaction.role_assignment_message_id == assignment_message.id).delete() #pylint:disable=line-too-long
-                self.db_session.delete(assignment_message)
-                self.db_session.commit()
-            await sleep(300)
+        # Delete all messages we could not find earlier
+        for assignment_message in will_delete:
+            # Delete reactions first
+            self.db_session.query(RoleAssignmentReaction).\
+                filter(RoleAssignmentReaction.role_assignment_message_id == assignment_message.id).delete() #pylint:disable=line-too-long
+            self.db_session.delete(assignment_message)
+            self.db_session.commit()
+        await sleep(self.loop_sleep_interval) # Every 5 minutes
 
     @commands.command(name='assign-roles')
     async def roles(self, ctx):

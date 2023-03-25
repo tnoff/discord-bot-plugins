@@ -8,7 +8,6 @@ from json import dumps as json_dumps
 from pathlib import Path
 from random import shuffle as random_shuffle
 from re import match as re_match
-from shutil import copy as copy_file
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Optional
 from uuid import uuid4
@@ -246,6 +245,12 @@ class LockfileException(Exception):
     '''
     Lock file Exceptions
     '''
+
+class ExitEarlyException(Exception):
+    '''
+    Exit early from tasks
+    '''
+
 #
 # Spotify Client
 #
@@ -966,60 +971,75 @@ class MusicPlayer:
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
-            # Await a sleep here just so other tasks can grab loop
-            await sleep(.01)
-            if self.play_queue.shutdown:
-                self.logger.warning(f'Music ::: Play queue in shutdown, skipping downloads for guild {self.guild.id}')
+            try:
+                await self.__download_files()
+            except ExitEarlyException:
                 return
-            self.logger.debug(f'Music ::: Waiting on new download item for guild {self.guild.id}')
-            source_dict = await self.download_queue.get()
-            self.logger.debug(f'Music ::: Gathered new item to download "{source_dict["search_string"]}"')
+            except Exception as e:
+                # New discord.py version doesn't seem to pick up task exceptions as well as I'd like
+                # So catch all exceptions here, log a traceback and exit
+                self.logger.exception(e)
+                print(f'Exception in download files {str(e)}')
+                return
 
-            # Check if queue is full before attempting to download file
-            if self.play_queue.full():
-                self.logger.warning(f'Music ::: Play queue full, aborting download of item "{source_dict["search_string"]}"')
-                await retry_discord_message_command(source_dict['message'].edit,
-                                                    content=f'Play queue is full, cannot add "{source_dict["search_string"]}"',
-                                                    delete_after=self.delete_after)
-                continue
+    async def __download_files(self):
+        '''
+        Main runner
+        '''
+        # Await a sleep here just so other tasks can grab loop
+        await sleep(.01)
+        if self.play_queue.shutdown:
+            self.logger.warning(f'Music ::: Play queue in shutdown, skipping downloads for guild {self.guild.id}')
+            raise ExitEarlyException('Exiting download files, bot is shutting down')
+        self.logger.debug(f'Music ::: Waiting on new download item for guild {self.guild.id}')
+        source_dict = await self.download_queue.get()
+        self.logger.debug(f'Music ::: Gathered new item to download "{source_dict["search_string"]}"')
 
-            try:
-                source_download = await self.download_client.create_source(source_dict, self.bot.loop, download=True)
-            except SongTooLong:
-                await retry_discord_message_command(source_dict['message'].edit,
-                                                    content=f'Search "{source_dict["search_string"]}" exceeds maximum of {self.max_song_length} seconds, skipping',
-                                                    delete_after=self.delete_after)
-                self.logger.warning(f'Music ::: Song too long to play in queue, skipping "{source_dict["search_string"]}"')
-                continue
-            if source_download is None:
-                await retry_discord_message_command(source_dict['message'].edit, content=f'Issue downloading video "{source_dict["search_string"]}", skipping',
-                                                    delete_after=self.delete_after)
-                continue
-            try:
-                self.play_queue.put_nowait(source_download)
-                self.logger.info(f'Music :: Adding "{source_download["title"]}" '
-                                 f'to queue in guild {source_dict["guild_id"]}')
-                await self.update_queue_strings()
-                await retry_discord_message_command(source_dict['message'].delete)
-            except QueueFull:
-                self.logger.warning(f'Music ::: Play queue full, aborting download of item "{source_dict["search_string"]}"')
-                await retry_discord_message_command(source_dict['message'].edit,
-                                                    content=f'Play queue is full, cannot add "{source_dict["search_string"]}"',
-                                                    delete_after=self.delete_after)
-                source_download.delete()
-                # Dont return to loop, file was downloaded so we can iterate on cache at least
-            except PutsBlocked:
-                self.logger.warning(f'Music :: Puts Blocked on queue in guild "{source_dict["guild_id"]}", assuming shutdown')
-                await retry_discord_message_command(source_dict['message'].delete)
-                source_download.delete()
-                continue
-            # Iterate on cache file if exists
-            if self.cache_file:
-                self.logger.info(f'Music :: Iterating file on original path {str(source_download["original_path"])}')
-                self.cache_file.iterate_file(source_download['original_path'])
-                self.logger.debug('Music ::: Checking cache files to remove in music player')
-                self.cache_file.remove()
-                self.cache_file.write_file()
+        # Check if queue is full before attempting to download file
+        if self.play_queue.full():
+            self.logger.warning(f'Music ::: Play queue full, aborting download of item "{source_dict["search_string"]}"')
+            await retry_discord_message_command(source_dict['message'].edit,
+                                                content=f'Play queue is full, cannot add "{source_dict["search_string"]}"',
+                                                delete_after=self.delete_after)
+            return
+
+        try:
+            source_download = await self.download_client.create_source(source_dict, self.bot.loop, download=True)
+        except SongTooLong:
+            await retry_discord_message_command(source_dict['message'].edit,
+                                                content=f'Search "{source_dict["search_string"]}" exceeds maximum of {self.max_song_length} seconds, skipping',
+                                                delete_after=self.delete_after)
+            self.logger.warning(f'Music ::: Song too long to play in queue, skipping "{source_dict["search_string"]}"')
+            return
+        if source_download is None:
+            await retry_discord_message_command(source_dict['message'].edit, content=f'Issue downloading video "{source_dict["search_string"]}", skipping',
+                                                delete_after=self.delete_after)
+            return
+        try:
+            self.play_queue.put_nowait(source_download)
+            self.logger.info(f'Music :: Adding "{source_download["title"]}" '
+                                f'to queue in guild {source_dict["guild_id"]}')
+            await self.update_queue_strings()
+            await retry_discord_message_command(source_dict['message'].delete)
+        except QueueFull:
+            self.logger.warning(f'Music ::: Play queue full, aborting download of item "{source_dict["search_string"]}"')
+            await retry_discord_message_command(source_dict['message'].edit,
+                                                content=f'Play queue is full, cannot add "{source_dict["search_string"]}"',
+                                                delete_after=self.delete_after)
+            source_download.delete()
+            # Dont return to loop, file was downloaded so we can iterate on cache at least
+        except PutsBlocked:
+            self.logger.warning(f'Music :: Puts Blocked on queue in guild "{source_dict["guild_id"]}", assuming shutdown')
+            await retry_discord_message_command(source_dict['message'].delete)
+            source_download.delete()
+            return
+        # Iterate on cache file if exists
+        if self.cache_file:
+            self.logger.info(f'Music :: Iterating file on original path {str(source_download["original_path"])}')
+            self.cache_file.iterate_file(source_download['original_path'])
+            self.logger.debug('Music ::: Checking cache files to remove in music player')
+            self.cache_file.remove()
+            self.cache_file.write_file()
 
     def set_next(self, *_args, **_kwargs):
         '''
@@ -1035,52 +1055,67 @@ class MusicPlayer:
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
-            self.next.clear()
-
             try:
-                # Wait for the next song. If we timeout cancel the player and disconnect...
-                async with timeout(self.disconnect_timeout):
-                    source = await self.play_queue.get()
-            except asyncio_timeout:
-                self.logger.info(f'Music :: bot reached timeout on queue in guild "{self.guild.name}"')
-                return await self.destroy(self.guild)
+                await self.__player_loop()
+            except ExitEarlyException:
+                return
+            except Exception as e:
+                self.logger.exception(e)
+                print(f'Player loop exception {str(e)}')
+                return
 
-            # Double check file didnt go away
-            if not source['file_path'].exists():
-                await retry_discord_message_command(self.text_channel.send, f'Unable to play "{source["title"]}", local file dissapeared')
-                continue
+    async def __player_loop(self):
+        '''
+        Player loop logic
+        '''
+        self.next.clear()
 
-            audio_source = FFmpegPCMAudio(str(source['file_path']))
-            self.song_skipped = False
-            audio_source.volume = self.volume
+        try:
+            # Wait for the next song. If we timeout cancel the player and disconnect...
+            async with timeout(self.disconnect_timeout):
+                source = await self.play_queue.get()
+        except asyncio_timeout:
+            self.logger.info(f'Music :: bot reached timeout on queue in guild "{self.guild.name}"')
+            await self.destroy(self.guild)
+            raise ExitEarlyException('Bot timeout, exiting') #pylint:disable=raise-missing-from
+
+        # Double check file didnt go away
+        if not source['file_path'].exists():
+            await retry_discord_message_command(self.text_channel.send, f'Unable to play "{source["title"]}", local file dissapeared')
+            return
+
+        audio_source = FFmpegPCMAudio(str(source['file_path']))
+        self.song_skipped = False
+        audio_source.volume = self.volume
+        try:
+            self.guild.voice_client.play(audio_source, after=self.set_next) #pylint:disable=line-too-long
+        except AttributeError:
+            self.logger.info(f'Music :: No voice client found, disconnecting from guild {self.guild.name}')
+            await self.destroy(self.guild)
+            raise ExitEarlyException('No voice client in guild, ending loop') #pylint:disable=raise-missing-from
+        self.logger.info(f'Music :: Now playing "{source["title"]}" requested '
+                            f'by "{source["requester"]}" in guild {self.guild.id}, url '
+                            f'"{source["webpage_url"]}"')
+        self.np_message = f'Now playing {source["webpage_url"]} requested by {source["requester"]}'
+        await self.update_queue_strings()
+
+        await self.next.wait()
+        self.np_message = ''
+        # Make sure the FFmpeg process is cleaned up.
+        audio_source.cleanup()
+        source.delete()
+
+        # Add song to history if possible
+        if not self.song_skipped:
             try:
-                self.guild.voice_client.play(audio_source, after=self.set_next) #pylint:disable=line-too-long
-            except AttributeError:
-                self.logger.info(f'Music :: No voice client found, disconnecting from guild {self.guild.name}')
-                return await self.destroy(self.guild)
-            self.logger.info(f'Music :: Now playing "{source["title"]}" requested '
-                             f'by "{source["requester"]}" in guild {self.guild.id}, url '
-                             f'"{source["webpage_url"]}"')
-            self.np_message = f'Now playing {source["webpage_url"]} requested by {source["requester"]}'
+                self.history.put_nowait(source)
+            except QueueFull:
+                await self.history.get()
+                self.history.put_nowait(source)
+
+        # If play queue empty, set np message to nill
+        if self.play_queue.empty() and self.download_queue.empty():
             await self.update_queue_strings()
-
-            await self.next.wait()
-            self.np_message = ''
-            # Make sure the FFmpeg process is cleaned up.
-            audio_source.cleanup()
-            source.delete()
-
-            # Add song to history if possible
-            if not self.song_skipped:
-                try:
-                    self.history.put_nowait(source)
-                except QueueFull:
-                    await self.history.get()
-                    self.history.put_nowait(source)
-
-            # If play queue empty, set np message to nill
-            if self.play_queue.empty() and self.download_queue.empty():
-                await self.update_queue_strings()
 
     async def clear_remaining_queue(self):
         '''

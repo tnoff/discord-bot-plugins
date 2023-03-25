@@ -109,6 +109,12 @@ class MarkovRelation(BASE):
     created_at = Column(DateTime)
 
 
+class ExitEarlyException(Exception):
+    '''
+    Exit early from tasks
+    '''
+
+
 class Markov(CogHelper):
     '''
     Save markov relations to a database periodically
@@ -169,64 +175,77 @@ class Markov(CogHelper):
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
-            retention_cutoff = datetime.utcnow() - timedelta(days= self.history_retention_days)
-            self.logger.debug(f'Markov :: Entering message gather loop, using cutoff {retention_cutoff}')
+            try:
+                await self.__main_loop()
+            except ExitEarlyException:
+                return
+            except Exception as e:
+                self.logger.exception(e)
+                print(f'Player loop exception {str(e)}')
+                return
 
-            for markov_channel in self.db_session.query(MarkovChannel).all():
-                await sleep(.01) # Sleep one second just in case someone called a command
-                channel = await self.bot.fetch_channel(markov_channel.channel_id)
-                server = await self.bot.fetch_guild(markov_channel.server_id)
-                emoji_ids = [emoji.id for emoji in await server.fetch_emojis()]
-                self.logger.info('Markov :: Gathering markov messages for '
-                                 f'channel {markov_channel.channel_id}')
-                # Start at the beginning of channel history,
-                # slowly make your way make to current day
-                if not markov_channel.last_message_id:
-                    messages = [m async for m in retry_discord_message_command(channel.history, limit=self.message_check_limit, after=retention_cutoff, oldest_first=True)]
-                else:
-                    try:
-                        last_message = await async_retry_discord_message_command(channel.fetch_message, markov_channel.last_message_id)
-                        messages = [m async for m in retry_discord_message_command(channel.history, after=last_message, limit=self.message_check_limit, oldest_first=True)]
-                    except NotFound:
-                        self.logger.warning(f'Markov :: Unable to find message {markov_channel.last_message_id}'
-                                            f' in channel {markov_channel.id}')
-                        # Last message on record not found
-                        # If this happens, wipe the channel clean and restart
-                        self._delete_channel_relations(markov_channel.id)
-                        markov_channel.last_message_id = None
-                        self.db_session.commit()
-                        # Skip this channel for now
-                        continue
+    async def __main_loop(self):
+        '''
+        Main loop runner
+        '''
+        retention_cutoff = datetime.utcnow() - timedelta(days= self.history_retention_days)
+        self.logger.debug(f'Markov :: Entering message gather loop, using cutoff {retention_cutoff}')
 
-                if len(messages) == 0:
-                    self.logger.debug(f'Markov :: No new messages for channel {markov_channel.channel_id}')
+        for markov_channel in self.db_session.query(MarkovChannel).all():
+            await sleep(.01) # Sleep one second just in case someone called a command
+            channel = await self.bot.fetch_channel(markov_channel.channel_id)
+            server = await self.bot.fetch_guild(markov_channel.server_id)
+            emoji_ids = [emoji.id for emoji in await server.fetch_emojis()]
+            self.logger.info('Markov :: Gathering markov messages for '
+                                f'channel {markov_channel.channel_id}')
+            # Start at the beginning of channel history,
+            # slowly make your way make to current day
+            if not markov_channel.last_message_id:
+                messages = [m async for m in retry_discord_message_command(channel.history, limit=self.message_check_limit, after=retention_cutoff, oldest_first=True)]
+            else:
+                try:
+                    last_message = await async_retry_discord_message_command(channel.fetch_message, markov_channel.last_message_id)
+                    messages = [m async for m in retry_discord_message_command(channel.history, after=last_message, limit=self.message_check_limit, oldest_first=True)]
+                except NotFound:
+                    self.logger.warning(f'Markov :: Unable to find message {markov_channel.last_message_id}'
+                                        f' in channel {markov_channel.id}')
+                    # Last message on record not found
+                    # If this happens, wipe the channel clean and restart
+                    self._delete_channel_relations(markov_channel.id)
+                    markov_channel.last_message_id = None
+                    self.db_session.commit()
+                    # Skip this channel for now
                     continue
 
+            if len(messages) == 0:
+                self.logger.debug(f'Markov :: No new messages for channel {markov_channel.channel_id}')
+                continue
 
-                for message in messages:
-                    self.logger.debug(f'Markov :: Gathering message {message.id} '
-                                      f'for channel {markov_channel.channel_id}')
-                    add_message = True
-                    if not message.content or message.author.bot:
-                        add_message = False
-                    elif message.content[0] == '!':
-                        add_message = False
-                    corpus = None
-                    if add_message:
-                        corpus = clean_message(message.content, emoji_ids)
-                    if corpus:
-                        self.logger.info(f'Attempting to add corpus "{corpus}" '
-                                        f'to channel {markov_channel.channel_id}')
-                        self.__build_and_save_relations(corpus, markov_channel, message.created_at)
-                    markov_channel.last_message_id = str(message.id)
-                    self.db_session.commit()
-                self.logger.debug(f'Markov :: Done with channel {markov_channel.channel_id}')
 
-            # Clean up old messages
-            self.db_session.query(MarkovRelation).filter(MarkovRelation.created_at < retention_cutoff).delete()
-            self.db_session.commit()
-            self.logger.debug('Markov :: Deleted expired/old markov relations')
-            await sleep(self.loop_sleep_interval) # Every 5 minutes
+            for message in messages:
+                self.logger.debug(f'Markov :: Gathering message {message.id} '
+                                    f'for channel {markov_channel.channel_id}')
+                add_message = True
+                if not message.content or message.author.bot:
+                    add_message = False
+                elif message.content[0] == '!':
+                    add_message = False
+                corpus = None
+                if add_message:
+                    corpus = clean_message(message.content, emoji_ids)
+                if corpus:
+                    self.logger.info(f'Attempting to add corpus "{corpus}" '
+                                    f'to channel {markov_channel.channel_id}')
+                    self.__build_and_save_relations(corpus, markov_channel, message.created_at)
+                markov_channel.last_message_id = str(message.id)
+                self.db_session.commit()
+            self.logger.debug(f'Markov :: Done with channel {markov_channel.channel_id}')
+
+        # Clean up old messages
+        self.db_session.query(MarkovRelation).filter(MarkovRelation.created_at < retention_cutoff).delete()
+        self.db_session.commit()
+        self.logger.debug('Markov :: Deleted expired/old markov relations')
+        await sleep(self.loop_sleep_interval) # Every 5 minutes
 
     @commands.group(name='markov', invoke_without_command=False)
     async def markov(self, ctx):

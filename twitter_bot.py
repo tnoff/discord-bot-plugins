@@ -50,6 +50,13 @@ class TwitterSubscriptionFilter(BASE):
     twitter_subscription_id = Column(Integer, ForeignKey('twitter_subscription.id'))
     regex_filter = Column(String(256))
 
+
+class ExitEarlyException(Exception):
+    '''
+    Exit early from tasks
+    '''
+
+
 class Twitter(CogHelper):
     '''
     Subscribe to twitter accounts and post messages in channel
@@ -141,16 +148,26 @@ class Twitter(CogHelper):
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
-            self.logger.info('Twitter :: Starting twitter subscription checks')
-            subscriptions = self.db_session.query(TwitterSubscription).all()
-            for subscription in subscriptions:
-                self.logger.debug(f'Twitter :: Checking subscription {subscription.id}')
-                subscription_filters = self.db_session.query(TwitterSubscriptionFilter).\
-                                            filter(TwitterSubscriptionFilter.twitter_subscription_id == subscription.id)
-                await self._check_subscription(subscription, subscription_filters)
-                # Sleep after each iteration so other tasks can proceed
-                await sleep(.01)
-            await sleep(self.loop_sleep_interval)
+            try:
+                await self.__main_loop()
+            except ExitEarlyException:
+                return
+            except Exception as e:
+                self.logger.exception(e)
+                print(f'Player loop exception {str(e)}')
+                return
+
+    async def __main_loop(self):
+        self.logger.info('Twitter :: Starting twitter subscription checks')
+        subscriptions = self.db_session.query(TwitterSubscription).all()
+        for subscription in subscriptions:
+            self.logger.debug(f'Twitter :: Checking subscription {subscription.id}')
+            subscription_filters = self.db_session.query(TwitterSubscriptionFilter).\
+                                        filter(TwitterSubscriptionFilter.twitter_subscription_id == subscription.id)
+            await self._check_subscription(subscription, subscription_filters)
+            # Sleep after each iteration so other tasks can proceed
+            await sleep(.01)
+        await sleep(self.loop_sleep_interval)
 
     @commands.group(name='twitter', invoke_without_command=False)
     async def twitter(self, ctx):
