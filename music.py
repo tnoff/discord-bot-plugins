@@ -484,7 +484,7 @@ class SourceFile():
             uuid_path = file_path.parent / f'{source_dict["guild_id"]}' / f'{uuid4()}{"".join(i for i in file_path.suffixes)}'
             # We should either symlink or copy the file here
             # That way we can handle a case in which the original download was removed from cache
-            uuid_path.symlink_to(original_path)
+            uuid_path.symlink_to(self.original_path)
             self.file_path = uuid_path
             self.logger.info(f'Music :: :: Moved downloaded url "{self._new_dict["webpage_url"]}" to file "{uuid_path}"')
 
