@@ -1102,7 +1102,11 @@ class MusicPlayer:
         await self.next.wait()
         self.np_message = ''
         # Make sure the FFmpeg process is cleaned up.
-        audio_source.cleanup()
+        try:
+            audio_source.cleanup()
+        except ValueError:
+            # Check if file is closed
+            pass
         source.delete()
 
         # Add song to history if possible
