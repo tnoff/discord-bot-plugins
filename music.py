@@ -8,6 +8,7 @@ from json import dumps as json_dumps
 from pathlib import Path
 from random import shuffle as random_shuffle
 from re import match as re_match
+from shutil import copyfile
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Optional
 from uuid import uuid4
@@ -487,9 +488,9 @@ class SourceFile():
             # Touch here to update the modified time, so that the cleanup check works as intendend
             # Rename file to a random uuid name, that way we can have diff videos with same/similar names
             uuid_path = file_path.parent / f'{source_dict["guild_id"]}' / f'{uuid4()}{"".join(i for i in file_path.suffixes)}'
-            # We should either symlink or copy the file here
+            # We should copy the file here, instead of symlink
             # That way we can handle a case in which the original download was removed from cache
-            uuid_path.symlink_to(self.original_path)
+            copyfile(str(self.original_path), str(uuid_path))
             self.file_path = uuid_path
             self.logger.info(f'Music :: :: Moved downloaded url "{self._new_dict["webpage_url"]}" to file "{uuid_path}"')
 
