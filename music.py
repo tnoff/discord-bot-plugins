@@ -83,22 +83,65 @@ NUMBER_REGEX = r'.*(?P<number>[0-9]+).*'
 YT_DLP_KEYS = ['id', 'title', 'webpage_url', 'uploader', 'duration']
 
 #
+# Exceptions
+#
+
+class PutsBlocked(Exception):
+    '''
+    Puts Blocked on Queue
+    '''
+
+class SongTooLong(Exception):
+    '''
+    Max length of song duration exceeded
+    '''
+
+class VideoBanned(Exception):
+    '''
+    Video is on banned list
+    '''
+
+class PlaylistMaxLength(Exception):
+    '''
+    Playlist hit max length
+    '''
+
+class SpotifyException(Exception):
+    '''
+    Spotify Client Exceptions
+    '''
+
+class LockfileException(Exception):
+    '''
+    Lock file Exceptions
+    '''
+
+class ExitEarlyException(Exception):
+    '''
+    Exit early from tasks
+    '''
+
+#
 # Common Functions
 #
 
-def max_song_filter_generator(max_song_length):
+def match_generator(max_song_length, banned_videos_list):
     '''
-    Get function for filtering max song length
+    Generate filters for yt-dlp
     '''
-    def max_song_filter(info, *, incomplete): #pylint:disable=unused-argument
+    def filter_function(info, *, incomplete): #pylint:disable=unused-argument
         '''
-        Filter song based on max song length
+        Throw errors if filters dont match
         '''
         duration = info.get('duration')
-        if duration and duration > max_song_length:
+        if duration and max_song_length and duration > max_song_length:
             raise SongTooLong(f'Song exceeds max length of {max_song_length}')
-    return max_song_filter
-
+        vid_id = info.get('id')
+        if vid_id and banned_videos_list:
+            for banned_video_dict in banned_videos_list:
+                if vid_id == banned_video_dict['id']:
+                    raise VideoBanned(f'Video id {vid_id} banned, message: {banned_video_dict["message"]}')
+    return filter_function
 
 def edit_audio_file(file_path):
     '''
@@ -217,40 +260,6 @@ class PlaylistItem(BASE):
     uploader = Column(String(256))
     playlist_id = Column(Integer, ForeignKey('playlist.id'))
     created_at = Column(DateTime)
-
-#
-# Exceptions
-#
-
-class PutsBlocked(Exception):
-    '''
-    Puts Blocked on Queue
-    '''
-
-class SongTooLong(Exception):
-    '''
-    Max length of song duration exceeded
-    '''
-
-class PlaylistMaxLength(Exception):
-    '''
-    Playlist hit max length
-    '''
-
-class SpotifyException(Exception):
-    '''
-    Spotify Client Exceptions
-    '''
-
-class LockfileException(Exception):
-    '''
-    Lock file Exceptions
-    '''
-
-class ExitEarlyException(Exception):
-    '''
-    Exit early from tasks
-    '''
 
 #
 # Spotify Client
@@ -1012,6 +1021,12 @@ class MusicPlayer:
                                                 delete_after=self.delete_after)
             self.logger.warning(f'Music ::: Song too long to play in queue, skipping "{source_dict["search_string"]}"')
             return
+        except VideoBanned as vb:
+            await retry_discord_message_command(source_dict['message'].edit,
+                                                content=f'Video is on banned list, see message "{str(vb)}"',
+                                                delete_after=self.delete_after)
+            self.logger.warning(f'Music ::: Song on video banned list, unable to play "{source_dict["search_string"]}"')
+            return
         if source_download is None:
             await retry_discord_message_command(source_dict['message'].edit, content=f'Issue downloading video "{source_dict["search_string"]}", skipping',
                                                 delete_after=self.delete_after)
@@ -1174,6 +1189,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.enable_audio_processing = settings.get('music_enable_audio_processing', False)
         self.enable_cache = settings.get('music_enable_cache_files', False)
         self.max_cache_files = settings.get('music_max_cache_files', MAX_CACHE_FILES_DEFAULT)
+        self.banned_videos_list = settings.get('music_banned_videos_list', [])
         spotify_client_id = settings.get('music_spotify_client_id', None)
         spotify_client_secret = settings.get('music_spotify_client_secret', None)
         youtube_api_key = settings.get('music_youtube_api_key', None)
@@ -1208,8 +1224,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             'source_address': '0.0.0.0',  # ipv6 addresses cause issues sometimes
             'outtmpl': str(self.download_dir / '%(id)s.%(ext)s'),
         }
-        if self.max_song_length:
-            ytdlopts['match_filter'] = max_song_filter_generator(self.max_song_length)
+        # Add any filter functions, do some logic so we only pass a single function into the processor
+        if self.max_song_length or self.banned_videos_list:
+            ytdlopts['match_filter'] = match_generator(self.max_song_length, self.banned_videos_list)
         ytdl = YoutubeDL(ytdlopts)
         if self.enable_audio_processing:
             ytdl.add_post_processor(VideoEditing(), when='post_process')
