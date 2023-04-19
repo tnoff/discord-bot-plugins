@@ -1023,7 +1023,7 @@ class MusicPlayer:
             return
         except VideoBanned as vb:
             await retry_discord_message_command(source_dict['message'].edit,
-                                                content=f'Video is on banned list, see message "{str(vb)}"',
+                                                content=f'{str(vb)}',
                                                 delete_after=self.delete_after)
             self.logger.warning(f'Music ::: Song on video banned list, unable to play "{source_dict["search_string"]}"')
             return
