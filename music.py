@@ -143,22 +143,23 @@ def match_generator(max_song_length, banned_videos_list):
                     raise VideoBanned(f'Video id {vid_id} banned, message: {banned_video_dict["message"]}')
     return filter_function
 
+def get_finished_path(path):
+    '''
+    Get 'editing path' for editing files
+    '''
+    return path.parent / (path.stem + '.finished.mp3')
+
+def get_editing_path(path):
+    '''
+    Get 'editing path' for editing files
+    '''
+    return path.parent / (path.stem + '.edited.mp3')
+
+
 def edit_audio_file(file_path):
     '''
     Normalize audio for file
     '''
-    def get_finished_path(path):
-        '''
-        Get 'editing path' for editing files
-        '''
-        return path.parent / (path.stem + '.finished.mp3')
-
-    def get_editing_path(path):
-        '''
-        Get 'editing path' for editing files
-        '''
-        return path.parent / (path.stem + '.edited.mp3')
-
     finished_path = get_finished_path(file_path)
     # If exists, assume it was already edited successfully
     if finished_path.exists():
@@ -525,6 +526,8 @@ class SourceFile():
         '''
         if self.file_path.exists():
             self.file_path.unlink()
+        if self.original_path.exists():
+            self.original_path.unlink()
 
 #
 # YTDL Post Processor
@@ -628,6 +631,9 @@ class CacheFile():
             self.logger.info(f'Music :: Removing item from cache {item}')
             if item['file_path'].exists():
                 item['file_path'].unlink()
+            finished_path = get_finished_path(item['file_path'])
+            if finished_path.exists():
+                finished_path.unlink()
         self._data = new_list
 
     def write_file(self):
