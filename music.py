@@ -803,6 +803,7 @@ class MusicPlayer:
         self.delete_after = delete_after
         self.history_playlist_id = history_playlist_id
         self.disconnect_timeout = disconnect_timeout
+        self.current_track_duration = 0
 
         self.download_queue = MyQueue(maxsize=queue_max_size)
         self.play_queue = MyQueue(maxsize=queue_max_size)
@@ -934,7 +935,7 @@ class MusicPlayer:
             },
         ]
         table = DapperTable(headers, rows_per_message=15)
-        duration = 0
+        duration = self.current_track_duration
         queue_items = deepcopy(self.play_queue._queue) #pylint:disable=protected-access
         for (count, item) in enumerate(queue_items):
             uploader = item['uploader'] or ''
@@ -1105,6 +1106,8 @@ class MusicPlayer:
         if not source['file_path'].exists():
             await retry_discord_message_command(self.text_channel.send, f'Unable to play "{source["title"]}", local file dissapeared')
             return
+
+        self.current_track_duration = source['duration']
 
         audio_source = FFmpegPCMAudio(str(source['file_path']))
         self.song_skipped = False
