@@ -2212,6 +2212,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 self.logger.warning(f'Music :: Puts to queue in guild {ctx.guild.id} are currently blocked, assuming shutdown')
                 await retry_discord_message_command(message.delete)
                 break
+        playlist_name = playlist.name
+        if PLAYHISTORY_PREFIX in playlist_name:
+            playlist_name = 'Channel History'
         if broke_early:
             await retry_discord_message_command(ctx.send, f'Added as many songs in playlist "{playlist.name}" to queue as possible, but hit limit',
                                                 delete_after=self.delete_after)
