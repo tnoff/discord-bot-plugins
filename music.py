@@ -926,12 +926,8 @@ class MusicPlayer:
                 'length': 9,
             },
             {
-                'name': 'Title',
-                'length': 64,
-            },
-            {
-                'name': 'Uploader',
-                'length': 32,
+                'name': 'Title /// Uploader',
+                'length': 80,
             },
         ]
         table = DapperTable(headers, rows_per_message=15)
@@ -944,8 +940,7 @@ class MusicPlayer:
             table.add_row([
                 f'{count + 1}',
                 f'{str(delta)}',
-                item['title'],
-                uploader,
+                f'{item["title"]} /// {uploader}'
             ])
         for t in table.print():
             items.append(f'```{t}```')
@@ -1504,8 +1499,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 'length': 3,
             },
             {
-                'name': 'Title',
-                'length': 64,
+                'name': 'Title /// Uploader',
+                'length': 80,
             },
             {
                 'name': 'Uploader',
@@ -1518,8 +1513,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             uploader = item['uploader'] or ''
             table.add_row([
                 f'{count + 1}',
-                item['title'],
-                uploader,
+                f'{item["title"]} /// {uploader}'
             ])
         messages = [f'```{t}```' for t in table.print()]
         for mess in messages:
@@ -1971,12 +1965,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 'length': 3,
             },
             {
-                'name': 'Title',
+                'name': 'Title /// Uploader',
                 'length': 64,
-            },
-            {
-                'name': 'Uploader',
-                'length': 32,
             },
         ]
         table = DapperTable(headers, rows_per_message=15)
@@ -1984,8 +1974,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             uploader = item.uploader or ''
             table.add_row([
                 f'{count + 1}',
-                item.title,
-                uploader,
+                f'{item.title} /// {uploader}',
             ])
             # Backwards compat for new field
             if not item.created_at:
