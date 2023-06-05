@@ -517,6 +517,8 @@ class SourceFile():
             return self.file_path
         if key == 'original_path':
             return self.original_path
+        if key == 'base_path':
+            return self.base_path
         return self._new_dict[key]
 
     def __setitem__(self, key, value):
