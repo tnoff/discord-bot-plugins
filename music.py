@@ -2236,13 +2236,13 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if PLAYHISTORY_PREFIX in playlist_name:
             playlist_name = 'Channel History'
         if broke_early:
-            await retry_discord_message_command(ctx.send, f'Added as many songs in playlist "{playlist.name}" to queue as possible, but hit limit',
+            await retry_discord_message_command(ctx.send, f'Added as many songs in playlist "{playlist_name}" to queue as possible, but hit limit',
                                                 delete_after=self.delete_after)
         elif max_num:
-            await retry_discord_message_command(ctx.send, f'Added {max_num} songs from "{playlist.name}" to queue',
+            await retry_discord_message_command(ctx.send, f'Added {max_num} songs from "{playlist_name}" to queue',
                                                 delete_after=self.delete_after)
         else:
-            await retry_discord_message_command(ctx.send, f'Added all songs in playlist "{playlist.name}" to queue',
+            await retry_discord_message_command(ctx.send, f'Added all songs in playlist "{playlist_name}" to queue',
                                                 delete_after=self.delete_after)
         playlist.last_queued = datetime.utcnow()
         self.db_session.commit()
