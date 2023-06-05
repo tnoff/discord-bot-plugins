@@ -155,7 +155,6 @@ def get_editing_path(path):
     '''
     return path.parent / (path.stem + '.edited.mp3')
 
-
 def edit_audio_file(file_path):
     '''
     Normalize audio for file
@@ -466,11 +465,12 @@ class SourceFile():
     '''
     Source file of downloaded content
     '''
-    def __init__(self, file_path, ytdl_data, source_dict, logger):
+    def __init__(self, file_path, original_path, ytdl_data, source_dict, logger):
         '''
         Init source file
 
         file_path                   :   Path to ytdl file
+        original_path               :   Path of original download of youtube dl file (if post processing)
         ytdl_data                   :   Ytdl download dict
         source_dict                 :   Source dict passed to yt-dlp
         logger                      :   Python logger
@@ -491,8 +491,13 @@ class SourceFile():
         except KeyError:
             self._new_dict['added_from_history'] = False
 
+        # File path: Path of file to be used in audio play, in guilds path
+        # Base path: Path of file that was copied over to guilds path
+        # Original path: Path of file originally downloaded before any post processing
         self.file_path = file_path
-        self.original_path = file_path
+        self.base_path = file_path
+        self.original_path = original_path
+
         if self.file_path:
             # The modified time of download videos can be the time when it was actually uploaded to youtube
             # Touch here to update the modified time, so that the cleanup check works as intendend
@@ -500,7 +505,7 @@ class SourceFile():
             uuid_path = file_path.parent / f'{source_dict["guild_id"]}' / f'{uuid4()}{"".join(i for i in file_path.suffixes)}'
             # We should copy the file here, instead of symlink
             # That way we can handle a case in which the original download was removed from cache
-            copyfile(str(self.original_path), str(uuid_path))
+            copyfile(str(self.base_path), str(uuid_path))
             self.file_path = uuid_path
             self.logger.info(f'Music :: :: Moved downloaded url "{self._new_dict["webpage_url"]}" to file "{uuid_path}"')
 
@@ -520,14 +525,19 @@ class SourceFile():
         '''
         self._new_dict[key] = value
 
-    def delete(self):
+    def delete(self, delete_original=False):
         '''
         Delete file
+
+        If delete original passed, delete base path and original file
         '''
         if self.file_path.exists():
             self.file_path.unlink()
-        if self.original_path.exists():
-            self.original_path.unlink()
+        if delete_original:
+            if self.base_path.exists():
+                self.base_path.unlink()
+            if self.original_path.exists():
+                self.original_path.unlink()
 
 #
 # YTDL Post Processor
@@ -544,9 +554,10 @@ class VideoEditing(PostProcessor):
         Get filename, edit with moviepy, and update dict
         '''
         file_path = Path(information['_filename'])
-        file_path = edit_audio_file(file_path)
-        information['_filename'] = str(file_path)
-        information['filepath'] = str(file_path)
+        edited_path = edit_audio_file(file_path)
+        information['_filename'] = str(edited_path)
+        information['filepath'] = str(edited_path)
+        information['original_path'] = file_path
         return [], information
 
 #
@@ -575,9 +586,9 @@ class CacheFile():
         # Check all files exist
         new_list = []
         for item in self._data:
-            item['file_path'] = Path(item['file_path'])
-            if not item['file_path'].exists():
-                self.logger.warning(f'Music :: :: Cached file {str(item["file_path"])} does not exist, skipping')
+            item['base_path'] = Path(item['base_path'])
+            if not item['base_path'].exists():
+                self.logger.warning(f'Music :: :: Cached file {str(item["base_path"])} does not exist, skipping')
                 continue
             item['last_iterated_at'] = datetime.strptime(item['last_iterated_at'], CACHE_DATETIME_FORMAT)
             item['created_at'] = datetime.strptime(item['created_at'], CACHE_DATETIME_FORMAT)
@@ -585,25 +596,26 @@ class CacheFile():
         self._data = new_list
         self.logger.info(f'Music :: :: Cache created with {len(self._data)} items')
 
-    def iterate_file(self, file_path):
+    def iterate_file(self, base_path, original_path):
         '''
         Bump file path
-        file_path       :   Path of cached file
+        base_path       :   Path of cached file
         '''
-        self.logger.info(f'Music :: Adding file path {str(file_path)} to cache file')
+        self.logger.info(f'Music :: Adding file path {str(base_path)} to cache file')
         for item in self._data:
-            if item['file_path'] == file_path:
+            if item['base_path'] == base_path:
                 item['count'] += 1
                 item['last_iterated_at'] = datetime.utcnow()
-                self.logger.info(f'Music :: Cache entry existed for path {str(file_path)}, bumping')
+                self.logger.info(f'Music :: Cache entry existed for path {str(base_path)}, bumping')
                 return
         now = datetime.utcnow()
-        self.logger.info(f'Music :: Cache entry did not exist for path {str(file_path)}, creating now')
+        self.logger.info(f'Music :: Cache entry did not exist for path {str(base_path)}, creating now')
         self._data.append({
-            'file_path': file_path,
+            'base_path': base_path,
             'count': 1,
             'last_iterated_at': now,
             'created_at': now,
+            'original_path': original_path,
         })
 
     def remove(self):
@@ -629,11 +641,10 @@ class CacheFile():
 
         for item in remove_files:
             self.logger.info(f'Music :: Removing item from cache {item}')
-            if item['file_path'].exists():
-                item['file_path'].unlink()
-            finished_path = get_finished_path(item['file_path'])
-            if finished_path.exists():
-                finished_path.unlink()
+            if item['base_path'].exists():
+                item['base_path'].unlink()
+            if item['original_path'].exists():
+                item['original_path'].unlink()
         self._data = new_list
 
     def write_file(self):
@@ -680,13 +691,19 @@ class DownloadClient():
             pass
 
         file_path = None
+        original_path = None
         if download:
             try:
                 file_path = Path(data['requested_downloads'][0]['filepath'])
                 self.logger.info(f'Music :: Downloaded url "{data["webpage_url"]}" to file "{str(file_path)}"')
             except (KeyError, IndexError):
                 self.logger.warning(f'Music :: Unable to get filepath from ytdl data {data}')
-        return SourceFile(file_path, data, source_dict, self.logger)
+            try:
+                original_path = Path(data['requested_downloads'][0]['original_path'])
+            except (KeyError, IndexError):
+                # No original path found is fine, likely just means post processing not enabled
+                pass
+        return SourceFile(file_path, original_path, data, source_dict, self.logger)
 
     async def create_source(self, source_dict, loop, download=False):
         '''
@@ -852,7 +869,7 @@ class MusicPlayer:
         while True:
             try:
                 source = self.play_queue.get_nowait()
-                source.delete()
+                source.delete(delete_original=not self.cache_file)
             except QueueEmpty:
                 break
         if self._player_task and not keep_play_queue:
@@ -1053,8 +1070,8 @@ class MusicPlayer:
             return
         # Iterate on cache file if exists
         if self.cache_file:
-            self.logger.info(f'Music :: Iterating file on original path {str(source_download["original_path"])}')
-            self.cache_file.iterate_file(source_download['original_path'])
+            self.logger.info(f'Music :: Iterating file on base path {str(source_download["base_path"])}')
+            self.cache_file.iterate_file(source_download['base_path'], source_download['original_path'])
             self.logger.debug('Music ::: Checking cache files to remove in music player')
             self.cache_file.remove()
             self.cache_file.write_file()
@@ -1127,7 +1144,8 @@ class MusicPlayer:
         except ValueError:
             # Check if file is closed
             pass
-        source.delete()
+        # Cleanup source files, if cache not enabled delete base/original as well
+        source.delete(delete_original=not self.cache_file)
 
         # Add song to history if possible
         if not self.song_skipped:
