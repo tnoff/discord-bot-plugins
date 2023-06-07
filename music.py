@@ -427,6 +427,12 @@ class MyQueue(Queue):
         random_shuffle(self._queue)
         return True
 
+    def size(self):
+        '''
+        Get size of queue
+        '''
+        return self.qsize()
+
     def clear(self):
         '''
         Remove all items from queue
@@ -850,7 +856,7 @@ class MusicPlayer:
         if not self._download_task:
             self._download_task = self.bot.loop.create_task(self.download_files())
 
-    async def stop_tasks(self, keep_play_queue=False):
+    async def stop_tasks(self):
         '''
         Stop downloads and player additions, if possible
         '''
@@ -874,14 +880,12 @@ class MusicPlayer:
                 source.delete(delete_original=not self.cache_file)
             except QueueEmpty:
                 break
-        if self._player_task and not keep_play_queue:
+        if self._player_task:
             self._player_task.cancel()
             self._player_task = None
         if self._download_task:
             self._download_task.cancel()
             self._download_task = None
-        if keep_play_queue:
-            self.play_queue.unblock()
         return messages
 
     async def acquire_lock(self, wait_timeout=600):
@@ -1483,15 +1487,12 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await retry_discord_message_command(ctx.send, 'There are currently no more queued songs.',
                                                       delete_after=self.delete_after)
         self.logger.info(f'Music :: Clear called in guild {ctx.guild.id}, first stopping tasks')
-        # Stop tasks, with exception of player
-        messages = await player.stop_tasks(keep_play_queue=True)
-        self.logger.debug(f'Music :: Clear has stopped tasks, deleting {len(messages)} messages')
-        for message in messages:
-            await retry_discord_message_command(message.delete)
-        await player.clear_queue_messages()
-        # Restart both tasks
-        self.logger.debug('Music :: Clear is restarting tasks')
-        await player.start_tasks()
+        # Try and keep this as simple as possible, get the size and remove that many songs
+        for _ in range(player.play_queue.size()):
+            item = player.play_queue.remove_item(1)
+            item.delete()
+        await player.update_queue_strings()
+        return await retry_discord_message_command(ctx.send, 'Cleared player queue', delete_after=self.delete_after)
 
     @commands.command(name='history')
     async def history_(self, ctx):
