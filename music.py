@@ -1357,6 +1357,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                               spotify_client=self.spotify_client, youtube_client=self.youtube_client,
                                               delete_after=self.delete_after)
 
+        self._cleanup_task = self.bot.loop.create_task(self.cleanup_players())
+
     async def cog_unload(self):
         '''
         Run when cog stops
@@ -1367,6 +1369,41 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         guilds = list(self.players.keys)
         for guild_id in guilds:
             await self.cleanup(guild_id)
+
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+
+    async def cleanup_players(self):
+        '''
+        Cleanup players with no members in the channel
+        '''
+        await self.bot.wait_until_ready()
+
+        while not self.bot.is_closed():
+            try:
+                await self.__cleanup_players()
+            except Exception as e:
+                self.logger.exception(e)
+                print(f'Player loop exception {str(e)}')
+                return
+
+    async def __cleanup_players(self):
+        '''
+        Check for players with no members, cleanup bot in channels that do
+        '''
+        guilds = []
+        for guild_id, player in self.players.items():
+            has_members = False
+            for member in player.voice_channel.members:
+                if member.id != self.bot.user.id:
+                    has_members = True
+                    break
+            if not has_members:
+                guilds.append(guild_id)
+        for guild_id in guilds:
+            self.logger.warning(f'No members connected to voice channel {guild_id}, stopping bot')
+            await self.cleanup(guild_id)
+        await sleep(60)
 
     async def __check_database_session(self, ctx):
         '''
