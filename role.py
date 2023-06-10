@@ -10,6 +10,7 @@ from sqlalchemy import ForeignKey
 from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
 from discord_bot.exceptions import CogMissingRequiredArg
+from discord_bot.utils import validate_config
 
 # Time until we delete assignment messages, in seconds
 MESSAGE_EXPIRY_DEFAULT = 60 * 60 * 24 * 7
@@ -101,8 +102,8 @@ class RoleAssignment(CogHelper):
         BASE.metadata.bind = self.db_engine
         try:
             validate_config(settings['role'], ROLE_SECTION_SCHEMA)
-        except ValidationError:
-            raise CogMissingRequiredArg('Unable to start role assignment bot, invalid config')
+        except ValidationError as exc:
+            raise CogMissingRequiredArg('Unable to start role assignment bot, invalid config') from exc
         self.message_expiry_timeout = settings['role'].get('assignment_expiry_timeout', MESSAGE_EXPIRY_DEFAULT)
         self.loop_sleep_interval = settings['role'].get('loop_sleep_interval', LOOP_SLEEP_INTERVAL_DEFAULT)
         self._task = None

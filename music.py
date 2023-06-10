@@ -1282,8 +1282,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.players = {}
         try:
             validate_config(settings['music'], MUSIC_SECTION_SCHEMA)
-        except ValidationError:
-            raise CogMissingRequiredArg('Unable to import music bot due to invalid config')
+        except ValidationError as exc:
+            raise CogMissingRequiredArg('Unable to import music bot due to invalid config') from exc
         self.delete_after = settings['music'].get('message_delete_after', DELETE_AFTER_DEFAULT)
         self.queue_max_size = settings['music'].get('queue_max_size', QUEUE_MAX_SIZE_DEFAULT)
         self.server_playlist_max = settings['music'].get('server_playlist_max', SERVER_PLAYLIST_MAX_DEFAULT)

@@ -145,8 +145,8 @@ class Markov(CogHelper):
         BASE.metadata.bind = self.db_engine
         try:
             validate_config(settings['markov'], MARKOV_SECTION_SCHEMA)
-        except ValidationError:
-            raise CogMissingRequiredArg('Invalid config given for markov bot')
+        except ValidationError as exc:
+            raise CogMissingRequiredArg('Invalid config given for markov bot') from exc
         self.loop_sleep_interval = settings['markov'].get('loop_sleep_interval', LOOP_SLEEP_INTERVAL_DEFAULT)
         self.message_check_limit = settings['markov'].get('message_check_limit', MESSAGE_CHECK_LIMIT)
         self.history_retention_days = settings['markov'].get('history_retention_days', MARKOV_HISTORY_RETENTION_DAYS_DEFAULT)
