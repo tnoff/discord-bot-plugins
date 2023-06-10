@@ -1102,6 +1102,8 @@ class MusicPlayer:
         source_dict = await self.download_queue.get()
         self.logger.debug(f'Music ::: Gathered new item to download "{source_dict["search_string"]}"')
 
+        video_non_exist_callback_functions = source_dict.get('video_non_exist_callback_functions', [])
+
         # Check if queue is full before attempting to download file
         if self.play_queue.full():
             self.logger.warning(f'Music ::: Play queue full, aborting download of item "{source_dict["search_string"]}"')
@@ -1127,6 +1129,8 @@ class MusicPlayer:
         if source_download is None:
             await retry_discord_message_command(source_dict['message'].edit, content=f'Issue downloading video "{source_dict["search_string"]}", skipping',
                                                 delete_after=self.delete_after)
+            for func in video_non_exist_callback_functions:
+                await func()
             return
         try:
             self.play_queue.put_nowait(source_download)
@@ -1483,11 +1487,17 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
     @commands.command(name='play')
     async def play_(self, ctx, *, search: str):
         '''
-        Request a song and add it to the queue.
+        Request a song and add it to the download queue, which will then play after the download
 
         search: str [Required]
             The song to search and retrieve from youtube.
-            This could be a simple search, an ID or URL.
+            This could be a string to search in youtube, an video id, or a direct url.
+
+            If spotify credentials are passed to the bot it can also be a spotify album or playlist.
+            If youtube api credentials are passed to the bot it can also be a youtube playlsit.
+        
+        shuffle: boolean [Optional]
+            If the search input is a spotify url or youtube api playlist, it will shuffle the results from the api before passing it into the download queue
         '''
         if not await self.check_user_role(ctx):
             return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
@@ -2253,6 +2263,13 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await retry_discord_message_command(ctx.send, 'Unable to find history for server', delete_after=self.delete_after)
         return await self.__playlist_queue(ctx, history_playlist, True, max_num, is_history=True)
 
+    async def __delete_non_existing_item(self, item, ctx):
+        self.logger.warning(f'Unable to find video "{item.video_id}" in playlist {item.playlist_id}, deleting')
+        await retry_discord_message_command(ctx.send, content=f'Unable to find video "{item.video_id}" in playlist, deleting',
+                                            delete_after=self.delete_after)
+        self.db_session.delete(item)
+        self.db_session.commit()
+
     async def __playlist_queue(self, ctx, playlist, shuffle, max_num, is_history=False):
         vc = ctx.voice_client
         if not vc:
@@ -2299,6 +2316,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                     'message': message,
                     # Pass history so we know to pass into history check later
                     'added_from_history': is_history,
+                    'video_non_exist_callback_functions': [partial(self.__delete_non_existing_item, item, ctx)],
                 })
             except QueueFull:
                 await retry_discord_message_command(message.edit, content=f'Unable to add item "{item.title}" with id "{item.video_id}" to queue, queue is full',
@@ -2323,54 +2341,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                                 delete_after=self.delete_after)
         playlist.last_queued = datetime.utcnow()
         self.db_session.commit()
-
-    @playlist.command(name='cleanup')
-    async def playlist_cleanup(self, ctx, playlist_index): #pylint:disable=too-many-branches
-        '''
-        Remove items in playlist where we cannot find source
-
-        playlist_index: integer [Required]
-            ID of playlist
-        '''
-        if not await self.check_user_role(ctx):
-            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
-        if not await self.__check_author_voice_chat(ctx):
-            return
-        if not await self.__check_database_session(ctx):
-            return retry_discord_message_command(ctx.send, 'Database not set, cannot use playlist functions', delete_after=self.delete_after)
-
-        vc = ctx.voice_client
-
-        if not vc:
-            await ctx.invoke(self.connect_)
-            vc = ctx.voice_client
-
-        player = await self.get_player(ctx, vc.channel)
-
-        self.logger.info(f'Music :: Playlist cleanup called on index "{playlist_index}" in server "{ctx.guild.id}"')
-        playlist = await self.__get_playlist(playlist_index, ctx)
-        if not playlist:
-            return None
-
-        for item in self.db_session.query(PlaylistItem).filter(PlaylistItem.playlist_id == playlist.id):
-            # Check directly against create source here
-            # Since we know the video id already
-            entry = {
-                'search_string': item.video_id,
-                'guild_id': ctx.guild.id,
-                'requester': ctx.author.name,
-            }
-            source = await player.download_client.create_source(entry, self.bot.loop, download=False)
-            if source is None:
-                self.logger.info(f'Music :: Unable to find source for "{item.title}", removing from database')
-                await retry_discord_message_command(ctx.send, f'Unable to find youtube source ' \
-                                         f'for "{item.title}", "{item.video_id}", removing item from database',
-                                         delete_after=self.delete_after)
-                self.db_session.delete(item)
-                self.db_session.commit()
-        self.logger.info(f'Music :: Finished cleanup for all items in playlist "{playlist.id}"')
-        await retry_discord_message_command(ctx.send, f'Checked all songs in playlist "{playlist.name}"',
-                                 delete_after=self.delete_after)
 
     @playlist.command(name='merge')
     async def playlist_merge(self, ctx, playlist_index_one, playlist_index_two):
