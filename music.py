@@ -19,6 +19,7 @@ from discord import FFmpegPCMAudio
 from discord.errors import HTTPException, DiscordServerError, RateLimited
 from discord.ext import commands
 from moviepy.editor import AudioFileClip, afx
+from jsonschema import ValidationError
 from numpy import sqrt
 from requests import get as requests_get
 from requests import post as requests_post
@@ -32,7 +33,8 @@ from yt_dlp.utils import DownloadError
 
 from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
-from discord_bot.utils import async_retry_command
+from discord_bot.exceptions import CogMissingRequiredArg
+from discord_bot.utils import async_retry_command, validate_config
 
 # GLOBALS
 PLAYHISTORY_PREFIX = '__playhistory__'
@@ -81,6 +83,76 @@ NUMBER_REGEX = r'.*(?P<number>[0-9]+).*'
 
 # We only care about the following data in the yt-dlp dict
 YT_DLP_KEYS = ['id', 'title', 'webpage_url', 'uploader', 'duration']
+
+# Music config schema
+MUSIC_SECTION_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'message_delete_after': {
+            'type': 'number',
+            'required': False,
+        },
+        'queue_max_size': {
+            'type': 'number',
+            'required': False,
+        },
+        'server_playlist_max': {
+            'type': 'number',
+            'required': False,
+        },
+        'max_song_length': {
+            'type': 'number',
+            'required': False,
+        },
+        'disconnect_timeout': {
+            'type': 'number',
+            'required': False,
+        },
+        'download_dir': {
+            'type': 'string',
+            'required': False,
+        },
+        'enable_audio_processing': {
+            'type': 'boolean',
+            'required': False,
+        },
+        'enable_cache_files': {
+            'type': 'boolean',
+            'required': False,
+        },
+        'max_cache_files': {
+            'type': 'number',
+            'required': False,
+        },
+        'spotify_client_id': {
+            'type': 'string',
+            'required': False,
+        },
+        'spotify_client_secret': {
+            'type': 'string',
+            'required': False,
+        },
+        'youtube_api_key': {
+            'type': 'string',
+            'required': False,
+        },
+        'banned_videos_list': {
+            'type': 'array',
+            'required': False,
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'id': {
+                        'type': 'string',
+                    },
+                    'message': {
+                        'type': 'string'
+                    },
+                },
+            },
+        },
+    }
+}
 
 #
 # Exceptions
@@ -1208,19 +1280,23 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         BASE.metadata.bind = self.db_engine
         self.logger = logger
         self.players = {}
-        self.delete_after = settings.get('music_message_delete_after', DELETE_AFTER_DEFAULT)
-        self.queue_max_size = settings.get('music_queue_max_size', QUEUE_MAX_SIZE_DEFAULT)
-        self.server_playlist_max = settings.get('music_server_playlist_max', SERVER_PLAYLIST_MAX_DEFAULT)
-        self.max_song_length = settings.get('music_max_song_length', MAX_SONG_LENGTH_DEFAULT)
-        self.disconnect_timeout = settings.get('music_disconnect_timeout', DISCONNECT_TIMEOUT_DEFAULT)
-        self.download_dir = settings.get('music_download_dir', None)
-        self.enable_audio_processing = settings.get('music_enable_audio_processing', False)
-        self.enable_cache = settings.get('music_enable_cache_files', False)
-        self.max_cache_files = settings.get('music_max_cache_files', MAX_CACHE_FILES_DEFAULT)
-        self.banned_videos_list = settings.get('music_banned_videos_list', [])
-        spotify_client_id = settings.get('music_spotify_client_id', None)
-        spotify_client_secret = settings.get('music_spotify_client_secret', None)
-        youtube_api_key = settings.get('music_youtube_api_key', None)
+        try:
+            validate_config(settings['music'], MUSIC_SECTION_SCHEMA)
+        except ValidationError:
+            raise CogMissingRequiredArg('Unable to import music bot due to invalid config')
+        self.delete_after = settings['music'].get('message_delete_after', DELETE_AFTER_DEFAULT)
+        self.queue_max_size = settings['music'].get('queue_max_size', QUEUE_MAX_SIZE_DEFAULT)
+        self.server_playlist_max = settings['music'].get('server_playlist_max', SERVER_PLAYLIST_MAX_DEFAULT)
+        self.max_song_length = settings['music'].get('max_song_length', MAX_SONG_LENGTH_DEFAULT)
+        self.disconnect_timeout = settings['music'].get('disconnect_timeout', DISCONNECT_TIMEOUT_DEFAULT)
+        self.download_dir = settings['music'].get('download_dir', None)
+        self.enable_audio_processing = settings['music'].get('enable_audio_processing', False)
+        self.enable_cache = settings['music'].get('enable_cache_files', False)
+        self.max_cache_files = settings['music'].get('max_cache_files', MAX_CACHE_FILES_DEFAULT)
+        self.banned_videos_list = settings['music'].get('banned_videos_list', [])
+        spotify_client_id = settings['music'].get('spotify_client_id', None)
+        spotify_client_secret = settings['music'].get('spotify_client_secret', None)
+        youtube_api_key = settings['music'].get('youtube_api_key', None)
         self.spotify_client = None
         if spotify_client_id and spotify_client_secret:
             self.spotify_client = SpotifyClient(spotify_client_id, spotify_client_secret)

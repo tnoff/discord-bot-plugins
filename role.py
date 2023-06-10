@@ -3,17 +3,21 @@ from datetime import datetime
 
 from discord.ext import commands
 from discord.errors import NotFound
+from jsonschema import ValidationError
 from sqlalchemy import Column, Integer, String
 from sqlalchemy import ForeignKey
 
 from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
+from discord_bot.exceptions import CogMissingRequiredArg
 
 # Time until we delete assignment messages, in seconds
 MESSAGE_EXPIRY_DEFAULT = 60 * 60 * 24 * 7
 
+# Time between each run of the loop
 LOOP_SLEEP_INTERVAL_DEFAULT = 300
 
+# Mappings for reactions
 EMOJI_MAPPING = {
     '\u0030\ufe0f\u20e3': ':zero:',
     '\u0031\ufe0f\u20e3': ':one:',
@@ -38,6 +42,21 @@ NUMBER_DICT = {
     8: 'eight',
     9: 'nine',
     0: 'zero',
+}
+
+# Role config schema
+ROLE_SECTION_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'assignment_expiry_timeout': {
+            'type': 'number',
+            'required': False,
+        },
+        'loop_sleep_interval': {
+            'type': 'number',
+            'required': False,
+        },
+    }
 }
 
 #
@@ -80,8 +99,12 @@ class RoleAssignment(CogHelper):
         super().__init__(bot, db_engine, logger, settings)
         BASE.metadata.create_all(self.db_engine)
         BASE.metadata.bind = self.db_engine
-        self.message_expiry_timeout = settings.get('role_assignment_expiry_timeout', MESSAGE_EXPIRY_DEFAULT)
-        self.loop_sleep_interval = settings.get('role_loop_sleep_interval', LOOP_SLEEP_INTERVAL_DEFAULT)
+        try:
+            validate_config(settings['role'], ROLE_SECTION_SCHEMA)
+        except ValidationError:
+            raise CogMissingRequiredArg('Unable to start role assignment bot, invalid config')
+        self.message_expiry_timeout = settings['role'].get('assignment_expiry_timeout', MESSAGE_EXPIRY_DEFAULT)
+        self.loop_sleep_interval = settings['role'].get('loop_sleep_interval', LOOP_SLEEP_INTERVAL_DEFAULT)
         self._task = None
 
     async def cog_load(self):

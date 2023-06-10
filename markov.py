@@ -9,12 +9,14 @@ from typing import Optional
 from discord import TextChannel
 from discord.ext import commands
 from discord.errors import NotFound, HTTPException, DiscordServerError
+from jsonschema import ValidationError
 from sqlalchemy import Column, DateTime, Integer, String
 from sqlalchemy import ForeignKey, UniqueConstraint
 
 from discord_bot.cogs.common import CogHelper
 from discord_bot.database import BASE
-from discord_bot.utils import retry_command, async_retry_command
+from discord_bot.exceptions import CogMissingRequiredArg
+from discord_bot.utils import retry_command, async_retry_command, validate_config
 
 # Make length of a leader or follower word
 MAX_WORD_LENGTH = 255
@@ -28,6 +30,24 @@ LOOP_SLEEP_INTERVAL_DEFAULT = 300
 # Limit for how many messages we grab on each history check
 MESSAGE_CHECK_LIMIT = 16
 
+# Markov config schema
+MARKOV_SECTION_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'loop_sleep_interval': {
+            'type': 'number',
+            'required': False,
+        },
+        'message_check_limit': {
+            'type': 'number',
+            'required': False,
+        },
+        'history_retention_days': {
+            'type': 'number',
+            'required': False,
+        },
+    }
+}
 
 def retry_discord_message_command(func, *args, **kwargs):
     '''
@@ -123,9 +143,13 @@ class Markov(CogHelper):
         super().__init__(bot, db_engine, logger, settings)
         BASE.metadata.create_all(self.db_engine)
         BASE.metadata.bind = self.db_engine
-        self.loop_sleep_interval = settings.get('markov_loop_sleep_interval', LOOP_SLEEP_INTERVAL_DEFAULT)
-        self.message_check_limit = settings.get('markov_message_check_limit', MESSAGE_CHECK_LIMIT)
-        self.history_retention_days = settings.get('markov_history_retention_days', MARKOV_HISTORY_RETENTION_DAYS_DEFAULT)
+        try:
+            validate_config(settings['markov'], MARKOV_SECTION_SCHEMA)
+        except ValidationError:
+            raise CogMissingRequiredArg('Invalid config given for markov bot')
+        self.loop_sleep_interval = settings['markov'].get('loop_sleep_interval', LOOP_SLEEP_INTERVAL_DEFAULT)
+        self.message_check_limit = settings['markov'].get('message_check_limit', MESSAGE_CHECK_LIMIT)
+        self.history_retention_days = settings['markov'].get('history_retention_days', MARKOV_HISTORY_RETENTION_DAYS_DEFAULT)
 
         self.lock_file = Path(NamedTemporaryFile(delete=False).name) #pylint:disable=consider-using-with
         self._task = None
