@@ -648,15 +648,16 @@ class CacheFile():
     '''
     Keep cache of local files
     '''
-    def __init__(self, cache_file, max_cache_files, logger):
+    def __init__(self, download_dir, max_cache_files, logger):
         '''
         Create new file cache
-        cache_file      :       Local cache json
+        download_dir    :       Dir where files are downloaded
         max_cache_files :       Maximum number of files to keep in cache
         logger          :       Python logger
         '''
         self._data = []
-        self._file = cache_file
+        self.download_dir = download_dir
+        self._file = self.download_dir / 'cache.json'
         self.max_cache_files = max_cache_files
         self.logger = logger
         if self._file.exists():
@@ -676,10 +677,23 @@ class CacheFile():
         self._data = new_list
         self.logger.info(f'Music :: :: Cache created with {len(self._data)} items')
 
+    def remove_extra_files(self):
+        '''
+        Remove files in directory that are not cached
+        '''
+        existing_files = set([str(self.download_dir / 'cache.json')])
+        for item in self._data:
+            existing_files.add(str(item['base_path']))
+            existing_files.add(str(item['original_path']))
+        for file_path in self.download_dir.glob('*'):
+            if str(file_path) not in existing_files:
+                file_path.unlink()
+
     def iterate_file(self, base_path, original_path):
         '''
         Bump file path
         base_path       :   Path of cached file
+        original_path   :   Path of original download file (if post processing enabled)
         '''
         self.logger.info(f'Music :: Adding file path {str(base_path)} to cache file')
         for item in self._data:
@@ -1318,7 +1332,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         self.cache_file = None
         if self.enable_cache:
-            self.cache_file = CacheFile(self.download_dir / 'cache.json', self.max_cache_files, self.logger)
+            self.cache_file = CacheFile(self.download_dir, self.max_cache_files, self.logger)
+            self.cache_file.remove_extra_files()
 
         ytdlopts = {
             'format': 'bestaudio',
