@@ -70,6 +70,10 @@ DISCONNECT_TIMEOUT_DEFAULT = 60 * 15
 # NOTE: If you enable audio processing this keeps double the files as one gets edited
 MAX_CACHE_FILES_DEFAULT = 2048
 
+# Number of shuffles to do
+# Note: Not sure if this should be configurable, for now assuming this fine
+NUM_SHUFFLES = 5
+
 # Spotify
 SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/api/token'
 SPOTIFY_BASE_URL = 'https://api.spotify.com/v1/'
@@ -496,7 +500,8 @@ class MyQueue(Queue):
         '''
         Shuffle queue
         '''
-        random_shuffle(self._queue)
+        for _ in range(NUM_SHUFFLES)
+            random_shuffle(self._queue)
         return True
 
     def size(self):
@@ -851,7 +856,8 @@ class DownloadClient():
             to_run = partial(self.__check_spotify_source, playlist_id=spotify_playlist_matcher.group('playlist_id'))
             search_strings = await loop.run_in_executor(None, to_run)
             if spotify_playlist_matcher.group('shuffle'):
-                random_shuffle(search_strings)
+                for _ in range(NUM_SHUFFLES):
+                    random_shuffle(search_strings)
             self.logger.debug(f'Music :: Gathered {len(search_strings)} from spotify playlist "{search}"')
             return search_strings
 
@@ -859,7 +865,8 @@ class DownloadClient():
             to_run = partial(self.__check_spotify_source, album_id=spotify_album_matcher.group('album_id'))
             search_strings = await loop.run_in_executor(None, to_run)
             if spotify_album_matcher.group('shuffle'):
-                random_shuffle(search_strings)
+                for _ in range(NUM_SHUFFLES):
+                    random_shuffle(search_strings)
             self.logger.debug(f'Music :: Gathered {len(search_strings)} from spotify playlist "{search}"')
             return search_strings
 
@@ -867,7 +874,8 @@ class DownloadClient():
             to_run = partial(self.__check_youtube_source, playlist_id=playlist_matcher.group('playlist_id'))
             search_strings = await loop.run_in_executor(None, to_run)
             if playlist_matcher.group('shuffle'):
-                random_shuffle(search_strings)
+                for _ in range(NUM_SHUFFLES):
+                    random_shuffle(search_strings)
             self.logger.debug(f'Music :: Gathered {len(search_strings)} from youtube playlist "{search}"')
             return search_strings
         return [search]
@@ -2348,7 +2356,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if shuffle:
             await retry_discord_message_command(ctx.send, 'Shuffling playlist items',
                                                 delete_after=self.delete_after)
-            random_shuffle(playlist_items)
+            for _ in range(NUM_SHUFFLES):
+                random_shuffle(playlist_items)
 
         if max_num:
             if max_num < 0:
