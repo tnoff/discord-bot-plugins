@@ -1364,6 +1364,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if self.download_dir.exists() and not self.enable_cache:
             rm_tree(self.download_dir)
 
+        guilds = list(self.players.keys)
+        for guild_id in guilds:
+            await self.cleanup(guild_id)
+
     async def __check_database_session(self, ctx):
         '''
         Check if database session is in use
