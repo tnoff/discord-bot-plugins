@@ -500,7 +500,7 @@ class MyQueue(Queue):
         '''
         Shuffle queue
         '''
-        for _ in range(NUM_SHUFFLES)
+        for _ in range(NUM_SHUFFLES):
             random_shuffle(self._queue)
         return True
 
