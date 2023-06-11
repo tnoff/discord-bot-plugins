@@ -1297,6 +1297,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             validate_config(settings['music'], MUSIC_SECTION_SCHEMA)
         except ValidationError as exc:
             raise CogMissingRequiredArg('Unable to import music bot due to invalid config') from exc
+        except KeyError:
+            settings['music'] = {}
+
         self.delete_after = settings['music'].get('message_delete_after', DELETE_AFTER_DEFAULT)
         self.queue_max_size = settings['music'].get('queue_max_size', QUEUE_MAX_SIZE_DEFAULT)
         self.server_playlist_max = settings['music'].get('server_playlist_max', SERVER_PLAYLIST_MAX_DEFAULT)
@@ -1352,6 +1355,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                               spotify_client=self.spotify_client, youtube_client=self.youtube_client,
                                               delete_after=self.delete_after)
 
+    async def cog_load(self):
+        '''
+        When cog starts
+        '''
         self._cleanup_task = self.bot.loop.create_task(self.cleanup_players())
 
     async def cog_unload(self):

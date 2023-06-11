@@ -145,6 +145,8 @@ class Markov(CogHelper):
             validate_config(settings['markov'], MARKOV_SECTION_SCHEMA)
         except ValidationError as exc:
             raise CogMissingRequiredArg('Invalid config given for markov bot') from exc
+        except KeyError:
+            settings['markov'] = {}
         self.loop_sleep_interval = settings['markov'].get('loop_sleep_interval', LOOP_SLEEP_INTERVAL_DEFAULT)
         self.message_check_limit = settings['markov'].get('message_check_limit', MESSAGE_CHECK_LIMIT)
         self.history_retention_days = settings['markov'].get('history_retention_days', MARKOV_HISTORY_RETENTION_DAYS_DEFAULT)

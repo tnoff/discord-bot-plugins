@@ -102,6 +102,8 @@ class RoleAssignment(CogHelper):
             validate_config(settings['role'], ROLE_SECTION_SCHEMA)
         except ValidationError as exc:
             raise CogMissingRequiredArg('Unable to start role assignment bot, invalid config') from exc
+        except KeyError:
+            settings['role'] = {}
         self.message_expiry_timeout = settings['role'].get('assignment_expiry_timeout', MESSAGE_EXPIRY_DEFAULT)
         self.loop_sleep_interval = settings['role'].get('loop_sleep_interval', LOOP_SLEEP_INTERVAL_DEFAULT)
         self._task = None
