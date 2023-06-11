@@ -94,55 +94,42 @@ MUSIC_SECTION_SCHEMA = {
     'properties': {
         'message_delete_after': {
             'type': 'number',
-            'required': False,
         },
         'queue_max_size': {
             'type': 'number',
-            'required': False,
         },
         'server_playlist_max': {
             'type': 'number',
-            'required': False,
         },
         'max_song_length': {
             'type': 'number',
-            'required': False,
         },
         'disconnect_timeout': {
             'type': 'number',
-            'required': False,
         },
         'download_dir': {
             'type': 'string',
-            'required': False,
         },
         'enable_audio_processing': {
             'type': 'boolean',
-            'required': False,
         },
         'enable_cache_files': {
             'type': 'boolean',
-            'required': False,
         },
         'max_cache_files': {
             'type': 'number',
-            'required': False,
         },
         'spotify_client_id': {
             'type': 'string',
-            'required': False,
         },
         'spotify_client_secret': {
             'type': 'string',
-            'required': False,
         },
         'youtube_api_key': {
             'type': 'string',
-            'required': False,
         },
         'banned_videos_list': {
             'type': 'array',
-            'required': False,
             'items': {
                 'type': 'object',
                 'properties': {

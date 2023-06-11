@@ -51,11 +51,9 @@ ROLE_SECTION_SCHEMA = {
     'properties': {
         'assignment_expiry_timeout': {
             'type': 'number',
-            'required': False,
         },
         'loop_sleep_interval': {
             'type': 'number',
-            'required': False,
         },
     }
 }

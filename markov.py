@@ -36,15 +36,13 @@ MARKOV_SECTION_SCHEMA = {
     'properties': {
         'loop_sleep_interval': {
             'type': 'number',
-            'required': False,
         },
         'message_check_limit': {
             'type': 'number',
-            'required': False,
         },
         'history_retention_days': {
             'type': 'number',
-            'required': False,
+
         },
     }
 }
