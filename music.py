@@ -1370,7 +1370,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         guilds = list(self.players.keys)
         for guild_id in guilds:
-            await self.cleanup(guild_id)
+            guild = await self.bot.fetch_guild(guild_id)
+            await self.cleanup(guild)
 
         if self._cleanup_task:
             self._cleanup_task.cancel()
@@ -1401,10 +1402,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                     has_members = True
                     break
             if not has_members:
-                guilds.append(guild_id)
-        for guild_id in guilds:
-            self.logger.warning(f'No members connected to voice channel {guild_id}, stopping bot')
-            await self.cleanup(guild_id)
+                guilds.append(voice_channel.guild)
+        for guild in guilds:
+            self.logger.warning(f'No members connected to voice channel {guild.id}, stopping bot')
+            await self.cleanup(guild)
         await sleep(60)
 
     async def __check_database_session(self, ctx):
