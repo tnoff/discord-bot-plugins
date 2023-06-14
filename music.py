@@ -1668,10 +1668,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 'name': 'Title /// Uploader',
                 'length': 80,
             },
-            {
-                'name': 'Uploader',
-                'length': 32,
-            },
         ]
         table = DapperTable(headers, rows_per_message=15)
         table_items = deepcopy(player.history._queue) #pylint:disable=protected-access
