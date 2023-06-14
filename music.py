@@ -1354,6 +1354,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.download_client = DownloadClient(ytdl, self.logger,
                                               spotify_client=self.spotify_client, youtube_client=self.youtube_client,
                                               delete_after=self.delete_after)
+        self._cleanup_task = None
 
     async def cog_load(self):
         '''
@@ -1395,14 +1396,14 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         Check for players with no members, cleanup bot in channels that do
         '''
         guilds = []
-        for guild_id, player in self.players.items():
+        for _guild_id, player in self.players.items():
             has_members = False
             for member in player.voice_channel.members:
                 if member.id != self.bot.user.id:
                     has_members = True
                     break
             if not has_members:
-                guilds.append(voice_channel.guild)
+                guilds.append(player.voice_channel.guild)
         for guild in guilds:
             self.logger.warning(f'No members connected to voice channel {guild.id}, stopping bot')
             await self.cleanup(guild)
