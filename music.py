@@ -1539,7 +1539,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             try:
                 await channel.connect()
             except asyncio_timeout:
-                self.logger.error(f'Music :: Connecting to channel {channel.id} timed out')
+                self.logger.warning(f'Music :: Connecting to channel {channel.id} timed out')
                 return await retry_discord_message_command(ctx.send, f'Connecting to channel: <{channel}> timed out.')
 
         await retry_discord_message_command(ctx.send, f'Connected to: {channel}', delete_after=self.delete_after)
