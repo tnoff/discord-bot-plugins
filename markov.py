@@ -217,6 +217,7 @@ class Markov(CogHelper):
 
         for markov_channel in self.db_session.query(MarkovChannel).all():
             await sleep(.01) # Sleep one second just in case someone called a command
+            self.logger.debug(f'Markov :: Checking channel id: {markov_channel.channel_id}, server id: {markov_channel.server_id}')
             channel = await self.bot.fetch_channel(markov_channel.channel_id)
             server = await self.bot.fetch_guild(markov_channel.server_id)
             emoji_ids = [emoji.id for emoji in await server.fetch_emojis()]
