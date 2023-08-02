@@ -23,7 +23,7 @@ class UrbanDictionary(CogHelper):
         self.logger.debug(f'Urban :: Looking up word string "{word}" {ctx.guild.id}')
         word_url = f'{BASE_URL}define.php?term={word}'
         result = requests_get(word_url, timeout=60)
-        if result.status != 200:
+        if result.status_code != 200:
             return await ctx.send(f'Unable to lookup word "{word}"')
         soup = BeautifulSoup(result.content, 'html.parser')
         definition_panels = soup.find_all("div", class_="definition")
@@ -35,5 +35,5 @@ class UrbanDictionary(CogHelper):
                 definitions.append(mean.text)
         text = ''
         for (count, define) in enumerate(definitions):
-            text = f'{text}{count}.{define}\n'
-        await ctx.send('```{text}```')
+            text = f'{text}{count}. {define}\n'
+        await ctx.send(f'```{text}```')
