@@ -3,6 +3,7 @@ from discord.ext import commands
 from requests import get as requests_get
 
 from discord_bot.cogs.common import CogHelper
+from dappertable import shorten_string_cjk
 
 BASE_URL = 'https://www.urbandictionary.com/'
 
@@ -12,11 +13,12 @@ class UrbanDictionary(CogHelper):
     '''
 
     @commands.command(name='urban')
-    async def word_lookup(self, ctx, word):
+    async def word_lookup(self, ctx, *, word: str):
         '''
         Lookup word on urban dictionary
 
-        word    :   String to lookup
+        search: str [Required]
+            The word or phrase to search in urban dictionary
         '''
         if not await self.check_user_role(ctx):
             return await ctx.send('Unable to verify user role, ignoring command')
@@ -34,6 +36,7 @@ class UrbanDictionary(CogHelper):
             for mean in meanings:
                 definitions.append(mean.text)
         text = ''
-        for (count, define) in enumerate(definitions):
-            text = f'{text}{count}. {define}\n'
+        for (count, define) in enumerate(definitions[:2]):
+            definition = shorten_string_cjk(define, 400)
+            text = f'{text}{count}. {definition}\n'
         await ctx.send(f'```{text}```')

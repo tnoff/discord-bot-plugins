@@ -678,6 +678,9 @@ class CacheFile():
             existing_files.add(str(item['base_path']))
             existing_files.add(str(item['original_path']))
         for file_path in self.download_dir.glob('*'):
+            if file_path.is_dir():
+                rm_tree(file_path)
+                continue
             if str(file_path) not in existing_files:
                 file_path.unlink()
 
