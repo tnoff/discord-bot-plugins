@@ -575,9 +575,13 @@ class SourceFile():
             uuid_path = file_path.parent / f'{source_dict["guild_id"]}' / f'{uuid4()}{"".join(i for i in file_path.suffixes)}'
             # We should copy the file here, instead of symlink
             # That way we can handle a case in which the original download was removed from cache
-            copyfile(str(self.base_path), str(uuid_path))
-            self.file_path = uuid_path
-            self.logger.info(f'Music :: :: Moved downloaded url "{self._new_dict["webpage_url"]}" to file "{uuid_path}"')
+            try:
+                copyfile(str(self.base_path), str(uuid_path))
+                self.file_path = uuid_path
+                self.logger.info(f'Music :: :: Moved downloaded url "{self._new_dict["webpage_url"]}" to file "{uuid_path}"')
+            except FileNotFoundError:
+                # Usually happened if you stopped bot while downloading
+                pass
 
     def __getitem__(self, key):
         '''
@@ -1348,6 +1352,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.logger.debug(f'Music ::: Gathered new item to download "{source_dict["search_string"]}", guild "{player.guild.id}"')
         if player.play_queue.shutdown:
             self.logger.warning(f'Music ::: Play queue in shutdown, skipping downloads for guild {player.guild.id}')
+            await retry_discord_message_command(source_dict['message'].delete)
             return
 
         video_non_exist_callback_functions = source_dict.get('video_non_exist_callback_functions', [])
