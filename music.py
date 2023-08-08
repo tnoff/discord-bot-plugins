@@ -900,21 +900,20 @@ class MusicPlayer:
     '''
 
     def __init__(self, bot, guild, cog_cleanup, text_channel, voice_channel, logger,
-                 download_client, cache_file, max_song_length, queue_max_size, delete_after, history_playlist_id, disconnect_timeout):
+                 cache_file_enabled, max_song_length, queue_max_size, delete_after, history_playlist_id, disconnect_timeout):
         self.bot = bot
         self.logger = logger
         self.guild = guild
         self.text_channel = text_channel
         self.voice_channel = voice_channel
         self.cog_cleanup = cog_cleanup
-        self.download_client = download_client
-        self.cache_file = cache_file
+        self.cache_file_enabled = cache_file_enabled
         self.delete_after = delete_after
         self.history_playlist_id = history_playlist_id
         self.disconnect_timeout = disconnect_timeout
         self.current_track_duration = 0
 
-        self.download_queue = MyQueue(maxsize=queue_max_size)
+
         self.play_queue = MyQueue(maxsize=queue_max_size)
         self.history = MyQueue(maxsize=queue_max_size)
         self.next = Event()
@@ -929,7 +928,6 @@ class MusicPlayer:
         self.lock_file = Path(NamedTemporaryFile(delete=False).name) #pylint:disable=consider-using-with
 
         self._player_task = None
-        self._download_task = None
 
     async def start_tasks(self):
         '''
@@ -937,15 +935,12 @@ class MusicPlayer:
         '''
         if not self._player_task:
             self._player_task = self.bot.loop.create_task(self.player_loop())
-        if not self._download_task:
-            self._download_task = self.bot.loop.create_task(self.download_files())
 
     async def stop_tasks(self):
         '''
         Stop downloads and player additions, if possible
         '''
         # Block puts first on download queue
-        self.download_queue.block()
         self.play_queue.block()
         # Wait to ensure we have the block set
         await sleep(.5)
@@ -954,22 +949,13 @@ class MusicPlayer:
         # Delete any files in play queue that are already added
         while True:
             try:
-                source = self.download_queue.get_nowait()
-                messages.append(source['message'])
-            except QueueEmpty:
-                break
-        while True:
-            try:
                 source = self.play_queue.get_nowait()
-                source.delete(delete_original=not self.cache_file)
+                source.delete(delete_original=not self.cache_file_enabled)
             except QueueEmpty:
                 break
         if self._player_task:
             self._player_task.cancel()
             self._player_task = None
-        if self._download_task:
-            self._download_task.cancel()
-            self._download_task = None
         return messages
 
     async def acquire_lock(self, wait_timeout=600):
@@ -1083,93 +1069,6 @@ class MusicPlayer:
                 self.queue_messages.append(await retry_discord_message_command(self.text_channel.send, table))
         await self.release_lock()
 
-    async def download_files(self):
-        '''
-        Go through download loop and download all files
-        '''
-        await self.bot.wait_until_ready()
-
-        while not self.bot.is_closed():
-            try:
-                await self.__download_files()
-            except ExitEarlyException:
-                return
-            except Exception as e:
-                # New discord.py version doesn't seem to pick up task exceptions as well as I'd like
-                # So catch all exceptions here, log a traceback and exit
-                self.logger.exception(e)
-                print(f'Exception in download files {str(e)}')
-                return
-
-    async def __download_files(self):
-        '''
-        Main runner
-        '''
-        # Await a sleep here just so other tasks can grab loop
-        await sleep(.01)
-        if self.play_queue.shutdown:
-            self.logger.warning(f'Music ::: Play queue in shutdown, skipping downloads for guild {self.guild.id}')
-            raise ExitEarlyException('Exiting download files, bot is shutting down')
-        self.logger.debug(f'Music ::: Waiting on new download item for guild {self.guild.id}')
-        source_dict = await self.download_queue.get()
-        self.logger.debug(f'Music ::: Gathered new item to download "{source_dict["search_string"]}"')
-
-        video_non_exist_callback_functions = source_dict.get('video_non_exist_callback_functions', [])
-
-        # Check if queue is full before attempting to download file
-        if self.play_queue.full():
-            self.logger.warning(f'Music ::: Play queue full, aborting download of item "{source_dict["search_string"]}"')
-            await retry_discord_message_command(source_dict['message'].edit,
-                                                content=f'Play queue is full, cannot add "{source_dict["search_string"]}"',
-                                                delete_after=self.delete_after)
-            return
-
-        try:
-            source_download = await self.download_client.create_source(source_dict, self.bot.loop, download=True)
-        except SongTooLong:
-            await retry_discord_message_command(source_dict['message'].edit,
-                                                content=f'Search "{source_dict["search_string"]}" exceeds maximum of {self.max_song_length} seconds, skipping',
-                                                delete_after=self.delete_after)
-            self.logger.warning(f'Music ::: Song too long to play in queue, skipping "{source_dict["search_string"]}"')
-            return
-        except VideoBanned as vb:
-            await retry_discord_message_command(source_dict['message'].edit,
-                                                content=f'{str(vb)}',
-                                                delete_after=self.delete_after)
-            self.logger.warning(f'Music ::: Song on video banned list, unable to play "{source_dict["search_string"]}"')
-            return
-        if source_download is None:
-            await retry_discord_message_command(source_dict['message'].edit, content=f'Issue downloading video "{source_dict["search_string"]}", skipping',
-                                                delete_after=self.delete_after)
-            for func in video_non_exist_callback_functions:
-                await func()
-            return
-        try:
-            self.play_queue.put_nowait(source_download)
-            self.logger.info(f'Music :: Adding "{source_download["title"]}" '
-                                f'to queue in guild {source_dict["guild_id"]}')
-            await self.update_queue_strings()
-            await retry_discord_message_command(source_dict['message'].delete)
-        except QueueFull:
-            self.logger.warning(f'Music ::: Play queue full, aborting download of item "{source_dict["search_string"]}"')
-            await retry_discord_message_command(source_dict['message'].edit,
-                                                content=f'Play queue is full, cannot add "{source_dict["search_string"]}"',
-                                                delete_after=self.delete_after)
-            source_download.delete()
-            # Dont return to loop, file was downloaded so we can iterate on cache at least
-        except PutsBlocked:
-            self.logger.warning(f'Music :: Puts Blocked on queue in guild "{source_dict["guild_id"]}", assuming shutdown')
-            await retry_discord_message_command(source_dict['message'].delete)
-            source_download.delete()
-            return
-        # Iterate on cache file if exists
-        if self.cache_file:
-            self.logger.info(f'Music :: Iterating file on base path {str(source_download["base_path"])}')
-            self.cache_file.iterate_file(source_download['base_path'], source_download['original_path'])
-            self.logger.debug('Music ::: Checking cache files to remove in music player')
-            self.cache_file.remove()
-            self.cache_file.write_file()
-
     def set_next(self, *_args, **_kwargs):
         '''
         Used for loop to call once voice channel done
@@ -1239,7 +1138,7 @@ class MusicPlayer:
             # Check if file is closed
             pass
         # Cleanup source files, if cache not enabled delete base/original as well
-        source.delete(delete_original=not self.cache_file)
+        source.delete(delete_original=not self.cache_file_enabled)
 
         # Add song to history if possible
         if not self.song_skipped:
@@ -1250,7 +1149,7 @@ class MusicPlayer:
                 self.history.put_nowait(source)
 
         # If play queue empty, set np message to nill
-        if self.play_queue.empty() and self.download_queue.empty():
+        if self.play_queue.empty():
             await self.update_queue_strings()
 
     async def clear_remaining_queue(self):
@@ -1305,6 +1204,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         self.delete_after = settings['music'].get('message_delete_after', DELETE_AFTER_DEFAULT)
         self.queue_max_size = settings['music'].get('queue_max_size', QUEUE_MAX_SIZE_DEFAULT)
+        self.download_queue = MyQueue(maxsize=self.queue_max_size)
         self.server_playlist_max = settings['music'].get('server_playlist_max', SERVER_PLAYLIST_MAX_DEFAULT)
         self.max_song_length = settings['music'].get('max_song_length', MAX_SONG_LENGTH_DEFAULT)
         self.disconnect_timeout = settings['music'].get('disconnect_timeout', DISCONNECT_TIMEOUT_DEFAULT)
@@ -1358,12 +1258,14 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                               spotify_client=self.spotify_client, youtube_client=self.youtube_client,
                                               delete_after=self.delete_after)
         self._cleanup_task = None
+        self._download_task = None
 
     async def cog_load(self):
         '''
         When cog starts
         '''
         self._cleanup_task = self.bot.loop.create_task(self.cleanup_players())
+        self._download_task = self.bot.loop.create_task(self.download_files())
 
     async def cog_unload(self):
         '''
@@ -1379,6 +1281,8 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
         if self._cleanup_task:
             self._cleanup_task.cancel()
+        if self._download_task:
+            self._download_task.cancel()
 
     async def cleanup_players(self):
         '''
@@ -1411,6 +1315,96 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             self.logger.warning(f'No members connected to voice channel {guild.id}, stopping bot')
             await self.cleanup(guild)
         await sleep(60)
+
+    async def download_files(self):
+        '''
+        Go through download loop and download all files
+        '''
+        await self.bot.wait_until_ready()
+
+        while not self.bot.is_closed():
+            try:
+                await self.__download_files()
+            except ExitEarlyException:
+                return
+            except Exception as e:
+                # New discord.py version doesn't seem to pick up task exceptions as well as I'd like
+                # So catch all exceptions here, log a traceback and exit
+                self.logger.exception(e)
+                print(f'Exception in download files {str(e)}')
+                return
+
+    async def __download_files(self):
+        '''
+        Main runner
+        '''
+        # Await a sleep here just so other tasks can grab loop
+        await sleep(.01)
+        try:
+            source_dict = self.download_queue.get_nowait()
+        except QueueEmpty:
+            return
+        player = source_dict.pop('player')
+        self.logger.debug(f'Music ::: Gathered new item to download "{source_dict["search_string"]}", guild "{player.guild.id}"')
+        if player.play_queue.shutdown:
+            self.logger.warning(f'Music ::: Play queue in shutdown, skipping downloads for guild {player.guild.id}')
+            return
+
+        video_non_exist_callback_functions = source_dict.get('video_non_exist_callback_functions', [])
+
+        # Check if queue is full before attempting to download file
+        if player.play_queue.full():
+            self.logger.warning(f'Music ::: Play queue full, aborting download of item "{source_dict["search_string"]}"')
+            await retry_discord_message_command(source_dict['message'].edit,
+                                                content=f'Play queue is full, cannot add "{source_dict["search_string"]}"',
+                                                delete_after=player.delete_after)
+            return
+
+        try:
+            source_download = await self.download_client.create_source(source_dict, self.bot.loop, download=True)
+        except SongTooLong:
+            await retry_discord_message_command(source_dict['message'].edit,
+                                                content=f'Search "{source_dict["search_string"]}" exceeds maximum of {player.max_song_length} seconds, skipping',
+                                                delete_after=player.delete_after)
+            self.logger.warning(f'Music ::: Song too long to play in queue, skipping "{source_dict["search_string"]}"')
+            return
+        except VideoBanned as vb:
+            await retry_discord_message_command(source_dict['message'].edit,
+                                                content=f'{str(vb)}',
+                                                delete_after=player.delete_after)
+            self.logger.warning(f'Music ::: Song on video banned list, unable to play "{source_dict["search_string"]}"')
+            return
+        if source_download is None:
+            await retry_discord_message_command(source_dict['message'].edit, content=f'Issue downloading video "{source_dict["search_string"]}", skipping',
+                                                delete_after=player.delete_after)
+            for func in video_non_exist_callback_functions:
+                await func()
+            return
+        try:
+            player.play_queue.put_nowait(source_download)
+            self.logger.info(f'Music :: Adding "{source_download["title"]}" '
+                                f'to queue in guild {source_dict["guild_id"]}')
+            await player.update_queue_strings()
+            await retry_discord_message_command(source_dict['message'].delete)
+        except QueueFull:
+            self.logger.warning(f'Music ::: Play queue full, aborting download of item "{source_dict["search_string"]}"')
+            await retry_discord_message_command(source_dict['message'].edit,
+                                                content=f'Play queue is full, cannot add "{source_dict["search_string"]}"',
+                                                delete_after=self.delete_after)
+            source_download.delete()
+            # Dont return to loop, file was downloaded so we can iterate on cache at least
+        except PutsBlocked:
+            self.logger.warning(f'Music :: Puts Blocked on queue in guild "{source_dict["guild_id"]}", assuming shutdown')
+            await retry_discord_message_command(source_dict['message'].delete)
+            source_download.delete()
+            return
+        # Iterate on cache file if exists
+        if self.cache_file:
+            self.logger.info(f'Music :: Iterating file on base path {str(source_download["base_path"])}')
+            self.cache_file.iterate_file(source_download['base_path'], source_download['original_path'])
+            self.logger.debug('Music ::: Checking cache files to remove in music player')
+            self.cache_file.remove()
+            self.cache_file.write_file()
 
     async def __check_database_session(self, ctx):
         '''
@@ -1490,7 +1484,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 history_playlist_id = history_playlist.id
             # Generate and start player
             player = MusicPlayer(ctx.bot, ctx.guild, ctx.cog.cleanup, ctx.channel, voice_channel,
-                                 self.logger, self.download_client, self.cache_file, self.max_song_length,
+                                 self.logger, self.max_song_length, self.cache_file is not None,
                                  self.queue_max_size, self.delete_after, history_playlist_id, self.disconnect_timeout)
             await player.start_tasks()
             self.players[ctx.guild.id] = player
@@ -1578,13 +1572,14 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             return await retry_discord_message_command(ctx.send, 'Queue is full, cannot add more songs',
                                                        delete_after=self.delete_after)
 
-        entries = await player.download_client.check_source(search, ctx.guild.id, ctx.author.name, self.bot.loop)
+        entries = await self.download_client.check_source(search, ctx.guild.id, ctx.author.name, self.bot.loop)
         for entry in entries:
             try:
                 message = await retry_discord_message_command(ctx.send, f'Downloading and processing "{entry["search_string"]}"')
                 self.logger.debug(f'Music :: Handing off entry {entry} to download queue')
                 entry['message'] = message
-                player.download_queue.put_nowait(entry)
+                entry['player'] = player
+                self.download_queue.put_nowait(entry)
             except PutsBlocked:
                 self.logger.warning(f'Music :: Puts to queue in guild {ctx.guild.id} are currently blocked, assuming shutdown')
                 await retry_discord_message_command(message.delete)
@@ -1982,15 +1977,13 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             await ctx.invoke(self.connect_)
             vc = ctx.voice_client
 
-        player = await self.get_player(ctx, vc.channel)
-
         playlist = await self.__get_playlist(playlist_index, ctx)
         if not playlist:
             return None
 
-        source_entries = await player.download_client.check_source(search, ctx.guild.id, ctx.author.name, self.bot.loop)
+        source_entries = await self.download_client.check_source(search, ctx.guild.id, ctx.author.name, self.bot.loop)
         for entry in source_entries:
-            source = await player.download_client.create_source(entry, self.bot.loop, download=False)
+            source = await self.download_client.create_source(entry, self.bot.loop, download=False)
             if source is None:
                 await retry_discord_message_command(ctx.send, f'Unable to find video for search {search}')
                 continue
@@ -2369,11 +2362,12 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             message = await retry_discord_message_command(ctx.send, f'Downloading and processing "{item.title}"')
             try:
                 # Just add directly to download queue here, since we already know the video id
-                player.download_queue.put_nowait({
+                self.download_queue.put_nowait({
                     'search_string': item.video_id,
                     'guild_id': ctx.guild.id,
                     'requester': ctx.author.name,
                     'message': message,
+                    'player': player,
                     # Pass history so we know to pass into history check later
                     'added_from_history': is_history,
                     'video_non_exist_callback_functions': [partial(self.__delete_non_existing_item, item, ctx)],
