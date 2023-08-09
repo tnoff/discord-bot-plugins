@@ -2338,7 +2338,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         if not vc:
             await ctx.invoke(self.connect_)
             vc = ctx.voice_client
-        player = await self.get_player(ctx, vc.channel)
 
         self.logger.info(f'Music :: Playlist queue called for playlist "{playlist.name}" in server "{ctx.guild.id}"')
         query = self.db_session.query(PlaylistItem).\
