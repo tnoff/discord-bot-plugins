@@ -151,39 +151,18 @@ Generate message with all roles.
 Users can reply to this message to add roles to themselves.
 ```
 
-## Twitter
+## Urban
 
-Twitter message bot.
-
-Monitor twitter feeds and post new messages from accounts to specified channels.
-
-### Commands
+Lookup a word in urban dictionary and get a definition.
 
 ```
-!twitter 
+!urban
 
-Planner functions
+Lookup word on urban dictionary
 
-Commands:
-  add-filter         Add filter to account subscription
-  list-filters       List filter on account subscription
-  list-subscriptions List channel subscriptions
-  remove-filter      Remove filter from account subscription
-  subscribe          Subscribe to twitter account, and post updates in channel
-  unsubscribe        Unsubscribe channel from twitter account
+search: str [Required]
+    The word or phrase to search in urban dictionary
 
-Type !help command for more info on a command.
-You can also type !help category for more info on a category.
-```
-
-### Config Section
-
-You'll need the proper twitter api keys for the bot to use this functionality.
-
-```
-twitter:
-  consumer_key: secret-consumer-key
-  consumer_secret: secret-consumer-secret
-  access_token_key: secret-access-token-key
-  access_token_secret: secret-access-token-secret
+Arguments:
+  word No description given
 ```

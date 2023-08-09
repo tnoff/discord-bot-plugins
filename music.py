@@ -413,6 +413,7 @@ class SpotifyClient():
 #
 # Youtube API Client
 #
+
 class YoutubeAPI():
     '''
     Get info from youtube api
@@ -1348,8 +1349,14 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             source_dict = self.download_queue.get_nowait()
         except QueueEmpty:
             return
-        player = source_dict.pop('player')
+        # Check for player, if doesn't exist return
+        try:
+            player = self.players[source_dict['guild_id']]
+        except KeyError:
+            await retry_discord_message_command(source_dict['message'].delete)
+            return
         self.logger.debug(f'Music ::: Gathered new item to download "{source_dict["search_string"]}", guild "{player.guild.id}"')
+        # Check if queue in shutdown, if so return
         if player.play_queue.shutdown:
             self.logger.warning(f'Music ::: Play queue in shutdown, skipping downloads for guild {player.guild.id}')
             await retry_discord_message_command(source_dict['message'].delete)
@@ -1583,7 +1590,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 message = await retry_discord_message_command(ctx.send, f'Downloading and processing "{entry["search_string"]}"')
                 self.logger.debug(f'Music :: Handing off entry {entry} to download queue')
                 entry['message'] = message
-                entry['player'] = player
                 self.download_queue.put_nowait(entry)
             except PutsBlocked:
                 self.logger.warning(f'Music :: Puts to queue in guild {ctx.guild.id} are currently blocked, assuming shutdown')
@@ -2372,7 +2378,6 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                     'guild_id': ctx.guild.id,
                     'requester': ctx.author.name,
                     'message': message,
-                    'player': player,
                     # Pass history so we know to pass into history check later
                     'added_from_history': is_history,
                     'video_non_exist_callback_functions': [partial(self.__delete_non_existing_item, item, ctx)],
