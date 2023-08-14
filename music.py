@@ -2367,6 +2367,9 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             else:
                 max_num = 0
 
+        # Get player in case we dont have one already
+        _player = await self.get_player(ctx, vc.channel)
+
         broke_early = False
         for item in playlist_items:
             message = await retry_discord_message_command(ctx.send, f'Downloading and processing "{item.title}"')
