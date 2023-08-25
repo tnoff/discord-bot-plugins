@@ -10,6 +10,7 @@ from random import shuffle as random_shuffle
 from re import match as re_match
 from shutil import copyfile
 from tempfile import NamedTemporaryFile, TemporaryDirectory
+from traceback import format_exc
 from typing import Optional
 from uuid import uuid4
 
@@ -1094,8 +1095,10 @@ class MusicPlayer:
                 return
             except Exception as e:
                 self.logger.exception(e)
+                self.logger.error(format_exc())
+                self.logger.error(str(e))
                 print(f'Player loop exception {str(e)}')
-                return
+                print('Formatted exception:', format_exc())
 
     async def __player_loop(self):
         '''
@@ -1300,8 +1303,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 await self.__cleanup_players()
             except Exception as e:
                 self.logger.exception(e)
-                print(f'Player loop exception {str(e)}')
-                return
+                self.logger.error(format_exc())
+                self.logger.error(str(e))
+                print(f'Cleanup players exception {str(e)}')
+                print('Formatted exception:', format_exc())
 
     async def __cleanup_players(self):
         '''
@@ -1336,8 +1341,10 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 # New discord.py version doesn't seem to pick up task exceptions as well as I'd like
                 # So catch all exceptions here, log a traceback and exit
                 self.logger.exception(e)
-                print(f'Exception in download files {str(e)}')
-                return
+                self.logger.error(format_exc())
+                self.logger.error(str(e))
+                print(f'Download files exception {str(e)}')
+                print('Formatted exception:', format_exc())
 
     async def __download_files(self):
         '''
