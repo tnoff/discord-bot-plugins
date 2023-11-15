@@ -138,9 +138,27 @@ You can also type !help category for more info on a category.
 
 ## Role
 
-Role assignment bot.
+Allows a bot to set so certain roles can add/remove other roles. Useful if you have a server with a pretty complicated heirarchy structure.
 
-Print a message to chat with a prompt for users to add emojis (0-9 emojis) to that message, upon which the bot will assign those roles to the users. Note that the bot user must have permissions to give users roles. Bot will only assign roles with 0 permissions.
+Example Config
+
+```
+role:
+    <server-id>:
+        reject_list:
+            - <role-you-dont-want-ppl-to-edit-id>
+        role_ownership:
+          <role-id-which-owns-listed-roles>:
+            - <role-id-which-owner-can-add-or-remove-from>
+```
+
+Then you can use commands like
+```
+!role list # list all roles
+!role owns # list roles user owns
+!role add @user @role # add user to role
+!role remove @user @role # remove user from role
+```
 
 ### Commands
 
@@ -166,3 +184,4 @@ search: str [Required]
 Arguments:
   word No description given
 ```
+

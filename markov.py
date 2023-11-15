@@ -150,6 +150,7 @@ class Markov(CogHelper):
         self.loop_sleep_interval = settings['markov'].get('loop_sleep_interval', LOOP_SLEEP_INTERVAL_DEFAULT)
         self.message_check_limit = settings['markov'].get('message_check_limit', MESSAGE_CHECK_LIMIT)
         self.history_retention_days = settings['markov'].get('history_retention_days', MARKOV_HISTORY_RETENTION_DAYS_DEFAULT)
+        self.server_reject_list = settings['markov'].get('server_reject_list', [])
 
         self.lock_file = Path(NamedTemporaryFile(delete=False).name) #pylint:disable=consider-using-with
         self._task = None
@@ -288,6 +289,9 @@ class Markov(CogHelper):
         if not await self.check_user_role(ctx):
             return await ctx.send('Unable to verify user role, ignoring command')
 
+        if ctx.guild.id in self.server_reject_list:
+            return await ctx.send('Unable to turn on markov for server, in reject list')
+
         # Ensure channel not already on
         markov = self.db_session.query(MarkovChannel).\
             filter(MarkovChannel.channel_id == str(ctx.channel.id)).\
@@ -315,6 +319,9 @@ class Markov(CogHelper):
         '''
         if not await self.check_user_role(ctx):
             return await ctx.send('Unable to verify user role, ignoring command')
+
+        if ctx.guild.id in self.server_reject_list:
+            return await ctx.send('Unable to turn off markov for server, in reject list')
 
         # Ensure channel not already on
         markov_channel = self.db_session.query(MarkovChannel).\
@@ -347,6 +354,9 @@ class Markov(CogHelper):
         '''
         if not await self.check_user_role(ctx):
             return await ctx.send('Unable to verify user role, ignoring command')
+
+        if ctx.guild.id in self.server_reject_list:
+            return await ctx.send('Unable to use markov for server, in reject list')
 
         self.logger.info(f'Markov :: Calling speak on server {ctx.guild.id}')
         all_words = []

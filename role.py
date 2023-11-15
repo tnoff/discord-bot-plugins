@@ -1,255 +1,193 @@
-from asyncio import sleep
-from datetime import datetime
+from re import search
 
-from discord.ext import commands
-from discord.errors import NotFound
+from dappertable import DapperTable
 from jsonschema import ValidationError
-from sqlalchemy import Column, Integer, String
-from sqlalchemy import ForeignKey
 
+from discord.errors import NotFound
+from discord.ext import commands
 from discord_bot.cogs.common import CogHelper
-from discord_bot.database import BASE
 from discord_bot.exceptions import CogMissingRequiredArg
 from discord_bot.utils import validate_config
-
-# Time until we delete assignment messages, in seconds
-MESSAGE_EXPIRY_DEFAULT = 60 * 60 * 24 * 7
-
-# Time between each run of the loop
-LOOP_SLEEP_INTERVAL_DEFAULT = 300
-
-# Mappings for reactions
-EMOJI_MAPPING = {
-    '\u0030\ufe0f\u20e3': ':zero:',
-    '\u0031\ufe0f\u20e3': ':one:',
-    '\u0032\ufe0f\u20e3': ':two:',
-    '\u0033\ufe0f\u20e3': ':three:',
-    '\u0034\ufe0f\u20e3': ':four:',
-    '\u0035\ufe0f\u20e3': ':five:',
-    '\u0036\ufe0f\u20e3': ':six:',
-    '\u0037\ufe0f\u20e3': ':seven:',
-    '\u0038\ufe0f\u20e3': ':eight:',
-    '\u0039\ufe0f\u20e3': ':nine:',
-}
-
-NUMBER_DICT = {
-    1: 'one',
-    2: 'two',
-    3: 'three',
-    4: 'four',
-    5: 'five',
-    6: 'six',
-    7: 'seven',
-    8: 'eight',
-    9: 'nine',
-    0: 'zero',
-}
 
 # Role config schema
 ROLE_SECTION_SCHEMA = {
     'type': 'object',
-    'properties': {
-        'assignment_expiry_timeout': {
-            'type': 'number',
-        },
-        'loop_sleep_interval': {
-            'type': 'number',
-        },
+    "minProperties": 1,
+    "additionalProperties": {
+        'type': 'object',
+        'properties': {
+            'role_ownership': {
+                "type": "object",
+                "minProperties": 1,
+                "additionalProperties": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": 'integer',
+                    },
+                },
+            },
+            'reject_list_roles': {
+                'type': 'array',
+                'items' : {
+                    'type': 'integer',
+                }
+            }
+        }
     }
 }
-
-#
-# Role Assignment Tables
-#
-
-class RoleAssignmentMessage(BASE):
-    '''
-    Message for role assignment
-    '''
-    __tablename__ = 'role_assignment_message'
-    id = Column(Integer, primary_key=True)
-    message_id = Column(String(128))
-    channel_id = Column(String(128))
-    server_id = Column(String(128))
-
-class RoleAssignmentReaction(BASE):
-    '''
-    Emoji and Role Association
-    '''
-    __tablename__ = 'role_assignment_reaction'
-    id = Column(Integer, primary_key=True)
-    role_id = Column(String(128))
-    emoji_name = Column(String(64))
-    role_assignment_message_id = Column(Integer, ForeignKey('role_assignment_message.id'))
-
-
-class ExitEarlyException(Exception):
-    '''
-    Exit early from tasks
-    '''
 
 
 class RoleAssignment(CogHelper):
     '''
-    Function to add message users can react to get assignment.
-    Also includes loop that will check for new role assignment messages every 5 minutes
+    Class that can add roles in more controlled fashion
     '''
     def __init__(self, bot, db_engine, logger, settings):
         super().__init__(bot, db_engine, logger, settings)
-        BASE.metadata.create_all(self.db_engine)
-        BASE.metadata.bind = self.db_engine
+        self.logger = logger
+        self.players = {}
         try:
             validate_config(settings['role'], ROLE_SECTION_SCHEMA)
         except ValidationError as exc:
-            raise CogMissingRequiredArg('Unable to start role assignment bot, invalid config') from exc
-        except KeyError:
-            settings['role'] = {}
-        self.message_expiry_timeout = settings['role'].get('assignment_expiry_timeout', MESSAGE_EXPIRY_DEFAULT)
-        self.loop_sleep_interval = settings['role'].get('loop_sleep_interval', LOOP_SLEEP_INTERVAL_DEFAULT)
-        self._task = None
+            raise CogMissingRequiredArg('Unable to import roles due to invalid config') from exc
 
-    async def cog_load(self):
-        self._task = self.bot.loop.create_task(self.main_loop())
+        self.settings = settings['role']
 
-    async def cog_unload(self):
-        if self._task:
-            self._task.cancel()
-
-    async def main_loop(self):
+    @commands.group(name='role', invoke_without_command=False)
+    async def role(self, ctx):
         '''
-        Our main player loop.
+        Role functions.
         '''
-        await self.bot.wait_until_ready()
+        if ctx.invoked_subcommand is None:
+            await ctx.send('Invalid sub command passed...')
 
-        message_cache = {}
-        role_cache = {}
-
-        while not self.bot.is_closed():
-            try:
-                await self.__main_loop(message_cache, role_cache)
-            except ExitEarlyException:
-                return
-            except Exception as e:
-                self.logger.exception(e)
-                print(f'Player loop exception {str(e)}')
-                return
-
-    async def __main_loop(self, message_cache, role_cache):
-
-        # Go through each saved message in database
-        # Save any you should delete
-        will_delete = []
-        for assignment_message in self.db_session.query(RoleAssignmentMessage).all():
-            self.logger.info(f'Role :: Checking assignment message {assignment_message.id}')
-            guild = await self.bot.fetch_guild(int(assignment_message.server_id))
-            try:
-                message = message_cache[assignment_message.message_id]
-            except KeyError:
-                channel = self.bot.get_channel(int(assignment_message.channel_id))
-                try:
-                    message = await channel.fetch_message(int(assignment_message.message_id))
-                except NotFound:
-                    self.logger.error(f'Role :: Unable to find message {assignment_message.id}'
-                                        ' going to delete db entry')
-                    will_delete.append(assignment_message)
-                    continue
-                delta = datetime.utcnow() - message.created_at
-                delta_seconds = (delta.days * 60 * 60 * 24) + delta.seconds
-                if delta_seconds > self.message_expiry_timeout:
-                    self.logger.info(f'Role :: Message "{message.id}" reached expiry, deleting')
-                    self.db_session.query(RoleAssignmentReaction).\
-                        filter(RoleAssignmentReaction.role_assignment_message_id == assignment_message.id).delete()
-                    await message.delete()
-                    self.db_session.delete(assignment_message)
-                    self.db_session.commit()
-                    continue
-                message_cache[assignment_message.message_id] = message
-
-            # Get mapping of what reactions should go with which role
-            reaction_dict = {}
-            for role_reaction in self.db_session.query(RoleAssignmentReaction).\
-                filter(RoleAssignmentReaction.role_assignment_message_id == assignment_message.id): #pylint:disable=line-too-long
-                reaction_dict[role_reaction.emoji_name] = role_reaction.role_id
-
-
-            # Find reactions to the mssage
-            for reaction in message.reactions:
-                self.logger.debug(f'Role :: Checking reaction {reaction} ' \
-                                    f'for message {assignment_message.id}')
-
-                # Get role reaction mapping
-                role_id = reaction_dict[EMOJI_MAPPING[reaction.emoji]]
-                try:
-                    role = role_cache[role_id]
-                except KeyError:
-                    role = guild.get_role(int(role_id))
-                    role_cache[role_id] = role
-
-                # Check for users in reaction
-                async for user in reaction.users():
-                    member = await guild.fetch_member(int(user.id))
-                    if not member:
-                        self.logger.error(f'Role :: Unable to read member for user {user.id} '\
-                                            f'in guild {guild.id}, likely a permissions issue')
-                        continue
-                    if role not in member.roles:
-                        await member.add_roles(role)
-                        self.logger.info(f'Role :: Adding role {role.name} to user {user.name}')
-
-        # Delete all messages we could not find earlier
-        for assignment_message in will_delete:
-            # Delete reactions first
-            self.db_session.query(RoleAssignmentReaction).\
-                filter(RoleAssignmentReaction.role_assignment_message_id == assignment_message.id).delete() #pylint:disable=line-too-long
-            self.db_session.delete(assignment_message)
-            self.db_session.commit()
-        await sleep(self.loop_sleep_interval) # Every 5 minutes
-
-    @commands.command(name='assign-roles')
-    async def roles(self, ctx):
+    @role.command(name='list')
+    async def role_list(self, ctx):
         '''
-        Generate message with all roles.
-        Users can reply to this message to add roles to themselves.
+        List all roles in server
         '''
-        if not await self.check_user_role(ctx):
-            return await ctx.send('Unable to verify user role, ignoring command')
-        self.logger.debug(f'Role :: Setting up message for role grants in server {ctx.guild.id}')
-        index = 0
-        message_strings = []
-        message_string = 'React with the following emojis to be automatically granted roles'
-        role_assign_list = []
+        headers = [
+            {
+                'name': 'Name',
+                'length': 80,
+            },
+        ]
+        table = DapperTable(headers, rows_per_message=15)
         for role in ctx.guild.roles:
-            # Ignore everyone role
-            if role.name == '@everyone':
+            if role.id in self.settings[ctx.guild.id]['reject_list']:
                 continue
-            # Only allow roles with no extra permissions
-            if role.permissions.value != 0:
+            table.add_row([
+                f'{role.name}'
+            ])
+        if table.size() == 0:
+            return await ctx.send('No roles found')
+        for item in table.print():
+            await ctx.send(f'```{item}```')
+
+    def get_owned_roles(self, ctx):
+        '''
+        Get list of roles user owns
+        '''
+        owned_roles = set([])
+        for role in ctx.author.roles:
+            if role.id in self.settings[ctx.guild.id]['reject_list']:
                 continue
-            emoji = f':{NUMBER_DICT[index]}:'
-            message_string = f'{message_string}\nFor role `@{role.name}`'
-            message_string = f'{message_string} reply with emoji {emoji}'
-            role_assign_list.append({'role_id': role.id, 'emoji_name': emoji})
-            index += 1
-            # Only show 10 roles at a time, since we only have 10 emojis to works with
-            if index >= 9:
-                index = 0
-                message_strings.append(message_string)
-                message_string = 'React with the following emojis to' \
-                                 'be automatically granted roles'
+            try:
+                owns = self.settings[ctx.guild.id]['role_ownership'][role.id]
+            except KeyError:
+                continue
+            for role_id in owns:
+                own_role = ctx.guild.get_role(role_id)
+                owned_roles.add(own_role)
+        return owned_roles
 
-        message_strings.append(message_string)
-        for message_string in message_strings:
+    @role.command(name='owned')
+    async def role_owned(self, ctx):
+        '''
+        List all roles in the server you can add
+        '''
+        headers = [
+            {
+                'name': 'Name',
+                'length': 80,
+            },
+        ]
+        table = DapperTable(headers, rows_per_message=15)
+        for role in self.get_owned_roles(ctx):
+            table.add_row([
+                f'{role.name}'
+            ])
+        if table.size() == 0:
+            return await ctx.send('No roles found')
+        for item in table.print():
+            await ctx.send(f'```{item}```')
 
-            message = await ctx.send(f'{message_string}')
-            new_message = RoleAssignmentMessage(message_id=str(message.id),
-                                                channel_id=str(message.channel.id),
-                                                server_id=str(message.guild.id))
-            self.db_session.add(new_message)
-            self.db_session.commit()
-            self.logger.info(f'Role :: Created new role assignment message {new_message.id}')
-            for role_assign in role_assign_list:
-                role_assign['role_assignment_message_id'] = new_message.id
-                assignment = RoleAssignmentReaction(**role_assign)
-                self.db_session.add(assignment)
-                self.db_session.commit()
-                self.logger.info(f'Role :: Created new role assignment reaction {assignment.id}')
+    async def get_user_and_role(self, ctx, user, role):
+        '''
+        Get user and role objects
+        '''
+        try:
+            user_id = int(search(r'\d+', user).group())
+        except AttributeError:
+            return None, None
+        try:
+            user = await ctx.guild.fetch_member(user_id)
+        except NotFound:
+            return None, None
+        try:
+            role_id = int(search(r'\d+', role).group())
+        except AttributeError:
+            return user, None
+        try:
+            role = ctx.guild.get_role(role_id)
+        except NotFound:
+            return user, None
+        return user, role
+
+    @role.command(name='add')
+    async def role_add(self, ctx, user, role):
+        '''
+        Add user to role that you own
+
+        user [@mention]
+            User you wish to add role to
+        role [@mention]
+            Role you wish to add that user to
+        '''
+        user_obj, role_obj = await self.get_user_and_role(ctx, user, role)
+        if user_obj is None:
+            return await ctx.send(f'Unable to find user {user}')
+        if role_obj is None:
+            return await ctx.send(f'Unable to find role {role}')
+        owned_roles = self.get_owned_roles(ctx)
+        user_name = user_obj.nick or user_obj.name
+        if role_obj not in owned_roles:
+            return await ctx.send(f'Cannot add users to role {role_obj.name}, you do not own role. Use !role owned to see a list of roles you own')
+        if role_obj in user_obj.roles:
+            return await ctx.send(f'User {user_name} already has role {role_obj.name}, skipping')
+        await user_obj.add_roles(role_obj)
+        return await ctx.send(f'Added user {user_name} to role {role_obj.name}')
+
+    @role.command(name='remove')
+    async def role_remove(self, ctx, user, role):
+        '''
+        Remove user to role that you own
+
+        user [@mention]
+            User you wish to remove role from
+        role [@mention]
+            Role you wish to remove that user from
+        '''
+        user_obj, role_obj = await self.get_user_and_role(ctx, user, role)
+        if user_obj is None:
+            return await ctx.send(f'Unable to find user {user}')
+        if role_obj is None:
+            return await ctx.send(f'Unable to find role {role}')
+        owned_roles = self.get_owned_roles(ctx)
+        user_name = user_obj.nick or user_obj.name
+        if role_obj not in owned_roles:
+            return await ctx.send(f'Cannot remove users to role {role_obj.name}, you do not own role. Use !role owned to see a list of roles you own')
+        if role_obj not in user_obj.roles:
+            return await ctx.send(f'User {user_name} does not have role {role_obj.name}, skipping')
+        await user_obj.remove_roles(role_obj)
+        return await ctx.send(f'Removed user {user_name} to role {role_obj.name}')
