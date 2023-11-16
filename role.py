@@ -32,6 +32,9 @@ ROLE_SECTION_SCHEMA = {
                 'items' : {
                     'type': 'integer',
                 }
+            },
+            'require_role': {
+                'type': 'integer',
             }
         }
     }
@@ -144,6 +147,15 @@ class RoleAssignment(CogHelper):
             return user, None
         return user, role
 
+    def check_required_role(self, ctx, user):
+        '''
+        Check user has required role before adding
+        '''
+        for role in user.roles:
+            if role.id == self.settings[ctx.guild.id]['required_role']:
+                return True
+        return False
+
     @role.command(name='add')
     async def role_add(self, ctx, user, role):
         '''
@@ -163,6 +175,8 @@ class RoleAssignment(CogHelper):
         user_name = user_obj.nick or user_obj.name
         if role_obj not in owned_roles:
             return await ctx.send(f'Cannot add users to role {role_obj.name}, you do not own role. Use !role owned to see a list of roles you own')
+        if not self.check_required_role(ctx, user_obj):
+            return await ctx.send(f'User {user_name} does not have required roles, skipping')
         if role_obj in user_obj.roles:
             return await ctx.send(f'User {user_name} already has role {role_obj.name}, skipping')
         await user_obj.add_roles(role_obj)
