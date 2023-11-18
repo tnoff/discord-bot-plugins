@@ -12,22 +12,34 @@ from discord_bot.utils import validate_config
 # Role config schema
 ROLE_SECTION_SCHEMA = {
     'type': 'object',
-    "minProperties": 1,
-    "additionalProperties": {
+    'minProperties': 1,
+    'additionalProperties': {
         'type': 'object',
         'properties': {
-            'role_ownership': {
-                "type": "object",
-                "minProperties": 1,
-                "additionalProperties": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": 'integer',
+            'role_controls': {
+                'type': 'object',
+                'minProperties': 1,
+                'additionalProperties': {
+                    'type': 'object',
+                    'properties': {
+                        'controls': {
+                            'type': 'array',
+                            'minItems': 1,
+                            'items': {
+                                'type': 'integer',
+                            },
+                        },
+                        'only_self': {
+                            'type': 'boolean',
+                            'default': False,
+                        }
                     },
+                    'required': [
+                        'controls',
+                    ]
                 },
             },
-            'reject_list_roles': {
+            'reject_list': {
                 'type': 'array',
                 'items' : {
                     'type': 'integer',
@@ -39,7 +51,6 @@ ROLE_SECTION_SCHEMA = {
         }
     }
 }
-
 
 class RoleAssignment(CogHelper):
     '''
@@ -87,25 +98,36 @@ class RoleAssignment(CogHelper):
         for item in table.print():
             await ctx.send(f'```{item}```')
 
-    def get_owned_roles(self, ctx):
+    def get_controlled_roles(self, ctx, user=None):
         '''
-        Get list of roles user owns
+        Get list of roles user controls
         '''
-        owned_roles = set([])
+        controlled_roles = {}
         for role in ctx.author.roles:
             if role.id in self.settings[ctx.guild.id]['reject_list']:
                 continue
             try:
-                owns = self.settings[ctx.guild.id]['role_ownership'][role.id]
+                controls = self.settings[ctx.guild.id]['role_controls'][role.id]
             except KeyError:
                 continue
-            for role_id in owns:
-                own_role = ctx.guild.get_role(role_id)
-                owned_roles.add(own_role)
-        return owned_roles
+            controls.setdefault('only_self', False)
+            if controls['only_self'] and user:
+                if ctx.author != user:
+                    continue
+            # We want to make sure if any of the controlled roles have only_self as false, we
+            # set the value there to false
+            for role_id in controls['controls']:
+                control_role = ctx.guild.get_role(role_id)
+                try:
+                    existing_value = controlled_roles[control_role]
+                    if existing_value is False:
+                        continue
+                except KeyError:
+                    controlled_roles[control_role] = controls['only_self']
+        return controlled_roles
 
-    @role.command(name='owned')
-    async def role_owned(self, ctx):
+    @role.command(name='controlled')
+    async def role_controlled(self, ctx):
         '''
         List all roles in the server you can add
         '''
@@ -116,9 +138,12 @@ class RoleAssignment(CogHelper):
             },
         ]
         table = DapperTable(headers, rows_per_message=15)
-        for role in self.get_owned_roles(ctx):
+        for role, only_self in self.get_controlled_roles(ctx).items():
+            out = f'{role.name}'
+            if only_self:
+                out = f'{out} (can only add/remove yourself from this role)'
             table.add_row([
-                f'{role.name}'
+                f'{out}'
             ])
         if table.size() == 0:
             return await ctx.send('No roles found')
@@ -159,7 +184,7 @@ class RoleAssignment(CogHelper):
     @role.command(name='add')
     async def role_add(self, ctx, user, role):
         '''
-        Add user to role that you own
+        Add user to role that you control
 
         user [@mention]
             User you wish to add role to
@@ -171,10 +196,10 @@ class RoleAssignment(CogHelper):
             return await ctx.send(f'Unable to find user {user}')
         if role_obj is None:
             return await ctx.send(f'Unable to find role {role}')
-        owned_roles = self.get_owned_roles(ctx)
+        controlled_roles = list(self.get_controlled_roles(ctx, user=user_obj).keys())
         user_name = user_obj.nick or user_obj.name
-        if role_obj not in owned_roles:
-            return await ctx.send(f'Cannot add users to role {role_obj.name}, you do not own role. Use !role owned to see a list of roles you own')
+        if role_obj not in controlled_roles:
+            return await ctx.send(f'Cannot add users to role {role_obj.name}, you do not control role. Use !role controlled to see a list of roles you control')
         if not self.check_required_role(ctx, user_obj):
             return await ctx.send(f'User {user_name} does not have required roles, skipping')
         if role_obj in user_obj.roles:
@@ -185,7 +210,7 @@ class RoleAssignment(CogHelper):
     @role.command(name='remove')
     async def role_remove(self, ctx, user, role):
         '''
-        Remove user to role that you own
+        Remove user to role that you control
 
         user [@mention]
             User you wish to remove role from
@@ -197,11 +222,11 @@ class RoleAssignment(CogHelper):
             return await ctx.send(f'Unable to find user {user}')
         if role_obj is None:
             return await ctx.send(f'Unable to find role {role}')
-        owned_roles = self.get_owned_roles(ctx)
+        controlled_roles = list(self.get_controlled_roles(ctx, user=user_obj).keys())
         user_name = user_obj.nick or user_obj.name
-        if role_obj not in owned_roles:
-            return await ctx.send(f'Cannot remove users to role {role_obj.name}, you do not own role. Use !role owned to see a list of roles you own')
+        if role_obj not in controlled_roles:
+            return await ctx.send(f'Cannot remove users to role {role_obj.name}, you do not control role. Use !role controlled to see a list of roles you control')
         if role_obj not in user_obj.roles:
             return await ctx.send(f'User {user_name} does not have role {role_obj.name}, skipping')
         await user_obj.remove_roles(role_obj)
-        return await ctx.send(f'Removed user {user_name} to role {role_obj.name}')
+        return await ctx.send(f'Removed user {user_name} from role {role_obj.name}')

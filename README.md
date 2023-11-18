@@ -146,19 +146,30 @@ Example Config
 role:
     <server-id>:
         reject_list:
-            - <role-you-dont-want-ppl-to-edit-id>
-        role_ownership:
-          <role-id-which-owns-listed-roles>:
-            - <role-id-which-owner-can-add-or-remove-from>
+          - <role-you-dont-want-ppl-to-edit-id>
+        require_role: <user being added must already have this role>
+        role_controls:
+          <role-id-which-controls-listed-roles>:
+            controls:
+              - <role-id-which-controller-can-add-or-remove-from>
+            only_self: True # Optional arg, user can only add/remove themselves to this role
 ```
 
 Then you can use commands like
 ```
 !role list # list all roles
-!role owns # list roles user owns
+!role controls # list roles user controls
 !role add @user @role # add user to role
 !role remove @user @role # remove user from role
 ```
+
+### Use Cases
+
+If you want one role to be able to add users to another role, the most basic use case. In the case where you have membership in a channel based on a role, and you want people to add each other easily.
+
+Use `role_controls`, add the ID of the controller role as a key, then under `controls` add a list of roles you want them to "control", meaning add/remove users.
+
+If you want one role to be able to add/remove themselves to and from another role, use the `only_self` flag and set to true. This is for a set of roles you want people to be able to add and remove themselves them from in a self service fashion. This is similar to a role assignment message bot.
 
 ### Commands
 
