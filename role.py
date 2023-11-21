@@ -82,7 +82,7 @@ class RoleAssignment(CogHelper):
         '''
         headers = [
             {
-                'name': 'Name',
+                'name': 'Role Name',
                 'length': 80,
             },
         ]
@@ -91,7 +91,7 @@ class RoleAssignment(CogHelper):
             if role.id in self.settings[ctx.guild.id]['reject_list']:
                 continue
             table.add_row([
-                f'{role.name}'
+                f'@{role.name}'
             ])
         if table.size() == 0:
             return await ctx.send('No roles found')
@@ -118,6 +118,9 @@ class RoleAssignment(CogHelper):
             # set the value there to false
             for role_id in controls['controls']:
                 control_role = ctx.guild.get_role(role_id)
+                # Cannot find role
+                if control_role is None:
+                    continue
                 try:
                     existing_value = controlled_roles[control_role]
                     if existing_value is False:
@@ -126,25 +129,29 @@ class RoleAssignment(CogHelper):
                     controlled_roles[control_role] = controls['only_self']
         return controlled_roles
 
-    @role.command(name='controlled')
+    @role.command(name='available')
     async def role_controlled(self, ctx):
         '''
         List all roles in the server you can add
         '''
         headers = [
             {
-                'name': 'Name',
-                'length': 80,
+                'name': 'Role Name',
+                'length': 40,
+            },
+            {
+                'name': 'You Can Add Yourself',
+                'length': 21,
             },
         ]
         table = DapperTable(headers, rows_per_message=15)
         for role, only_self in self.get_controlled_roles(ctx).items():
-            out = f'{role.name}'
+            row = [f'@{role.name}']
             if only_self:
-                out = f'{out} (can only add/remove yourself from this role)'
-            table.add_row([
-                f'{out}'
-            ])
+                row += ['Yes']
+            else:
+                row += ['No']
+            table.add_row(row)
         if table.size() == 0:
             return await ctx.send('No roles found')
         for item in table.print():
