@@ -78,7 +78,7 @@ class RoleAssignment(CogHelper):
     @role.command(name='list')
     async def role_list(self, ctx):
         '''
-        List all roles in server
+        List all roles within the server
         '''
         headers = [
             {
@@ -87,18 +87,20 @@ class RoleAssignment(CogHelper):
             },
         ]
         table = DapperTable(headers, rows_per_message=15)
+        role_names = set([])
         for role in ctx.guild.roles:
             if role.id in self.settings[ctx.guild.id]['reject_list']:
                 continue
-            table.add_row([
-                f'@{role.name}'
-            ])
+            role_names.add(role.name)
+        # Make sure we sort the role names
+        for name in sorted(role_names):
+            table.add_row([f'@{name}'])
         if table.size() == 0:
             return await ctx.send('No roles found')
         for item in table.print():
             await ctx.send(f'```{item}```')
 
-    def get_controlled_roles(self, ctx, user=None):
+    def get_controlled_roles(self, ctx, user=None, sort_output=False):
         '''
         Get list of roles user controls
         '''
@@ -114,25 +116,28 @@ class RoleAssignment(CogHelper):
             if controls['only_self'] and user:
                 if ctx.author != user:
                     continue
-            # We want to make sure if any of the controlled roles have only_self as false, we
-            # set the value there to false
             for role_id in controls['controls']:
                 control_role = ctx.guild.get_role(role_id)
                 # Cannot find role
                 if control_role is None:
                     continue
+                # We want to make sure if any of the controlled roles have only_self as false, we
+                # set the value there to false
                 try:
                     existing_value = controlled_roles[control_role]
                     if existing_value is False:
                         continue
+                    controlled_roles[control_role] = controls['only_self']
                 except KeyError:
                     controlled_roles[control_role] = controls['only_self']
+        if sort_output:
+            controlled_roles = dict(sorted(controlled_roles.items(key=lambda item: item.name)))
         return controlled_roles
 
     @role.command(name='available')
     async def role_controlled(self, ctx):
         '''
-        List all roles in the server you can add
+        List all roles in the server that are available to your user to control
         '''
         headers = [
             {
@@ -140,17 +145,17 @@ class RoleAssignment(CogHelper):
                 'length': 40,
             },
             {
-                'name': 'You Can Add Yourself',
-                'length': 21,
+                'name': 'Control Status',
+                'length': 40,
             },
         ]
         table = DapperTable(headers, rows_per_message=15)
-        for role, only_self in self.get_controlled_roles(ctx).items():
+        for role, only_self in self.get_controlled_roles(ctx, sort_output=True).items():
             row = [f'@{role.name}']
             if only_self:
-                row += ['Yes']
+                row += ['You Can Add Yourself']
             else:
-                row += ['No']
+                row += ['You Can Add Youserlf Or Other Users']
             table.add_row(row)
         if table.size() == 0:
             return await ctx.send('No roles found')
@@ -191,7 +196,7 @@ class RoleAssignment(CogHelper):
     @role.command(name='add')
     async def role_add(self, ctx, user, role):
         '''
-        Add user to role that you control
+        Add user to role that is available to you
 
         user [@mention]
             User you wish to add role to
@@ -217,7 +222,7 @@ class RoleAssignment(CogHelper):
     @role.command(name='remove')
     async def role_remove(self, ctx, user, role):
         '''
-        Remove user to role that you control
+        Remove user from a role available to you
 
         user [@mention]
             User you wish to remove role from
