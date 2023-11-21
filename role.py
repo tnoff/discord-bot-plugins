@@ -204,7 +204,7 @@ class RoleAssignment(CogHelper):
         if role_obj is None:
             return await ctx.send(f'Unable to find role {role}')
         controlled_roles = list(self.get_controlled_roles(ctx, user=user_obj).keys())
-        user_name = user_obj.nick or user_obj.name
+        user_name = user_obj.nick or user_obj.display_name or user_obj.name
         if role_obj not in controlled_roles:
             return await ctx.send(f'Cannot add users to role {role_obj.name}, you do not control role. Use !role controlled to see a list of roles you control')
         if not self.check_required_role(ctx, user_obj):
@@ -230,7 +230,7 @@ class RoleAssignment(CogHelper):
         if role_obj is None:
             return await ctx.send(f'Unable to find role {role}')
         controlled_roles = list(self.get_controlled_roles(ctx, user=user_obj).keys())
-        user_name = user_obj.nick or user_obj.name
+        user_name = user_obj.nick or user_obj.display_name or user_obj.name
         if role_obj not in controlled_roles:
             return await ctx.send(f'Cannot remove users to role {role_obj.name}, you do not control role. Use !role controlled to see a list of roles you control')
         if role_obj not in user_obj.roles:
