@@ -87,12 +87,11 @@ class RoleAssignment(CogHelper):
             },
         ]
         table = DapperTable(headers, rows_per_message=15)
-        role_names = set([])
+        role_names = []
         for role in ctx.guild.roles:
             if role.id in self.settings[ctx.guild.id]['reject_list']:
                 continue
-            role_names.add(role.name)
-        # Make sure we sort the role names
+            role_names.append(role.name)
         for name in sorted(role_names):
             table.add_row([f'@{name}'])
         if table.size() == 0:
@@ -100,7 +99,7 @@ class RoleAssignment(CogHelper):
         for item in table.print():
             await ctx.send(f'```{item}```')
 
-    def get_controlled_roles(self, ctx, user=None, sort_output=False):
+    def get_controlled_roles(self, ctx, user=None):
         '''
         Get list of roles user controls
         '''
@@ -130,8 +129,6 @@ class RoleAssignment(CogHelper):
                     controlled_roles[control_role] = controls['only_self']
                 except KeyError:
                     controlled_roles[control_role] = controls['only_self']
-        if sort_output:
-            controlled_roles = dict(sorted(controlled_roles.items(key=lambda item: item.name)))
         return controlled_roles
 
     @role.command(name='available')
@@ -150,12 +147,17 @@ class RoleAssignment(CogHelper):
             },
         ]
         table = DapperTable(headers, rows_per_message=15)
-        for role, only_self in self.get_controlled_roles(ctx, sort_output=True).items():
+        rows = []
+        for role, only_self in self.get_controlled_roles(ctx).items():
             row = [f'@{role.name}']
             if only_self:
                 row += ['You Can Add Yourself']
             else:
                 row += ['You Can Add Youserlf Or Other Users']
+            rows.append(row)
+        # Sort output
+        rows = sorted(rows)
+        for row in rows:
             table.add_row(row)
         if table.size() == 0:
             return await ctx.send('No roles found')
