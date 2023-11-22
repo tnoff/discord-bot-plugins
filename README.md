@@ -148,20 +148,30 @@ role:
         reject_list:
           - <role-you-dont-want-ppl-to-edit-id>
         require_role: <user being added must already have this role>
-        role_controls:
+        role_manages:
           <role-id-which-controls-listed-roles>:
-            controls:
+            manages:
               - <role-id-which-controller-can-add-or-remove-from>
             only_self: True # Optional arg, user can only add/remove themselves to this role
+        override_roles:
+          - <role-id-which-can-add-any-role-to-any-user>
 ```
 
 Then you can use commands like
 ```
 !role list # list all roles
-!role controls # list roles user controls
+!role available # list roles user controls
 !role add @user @role # add user to role
 !role remove @user @role # remove user from role
 ```
+
+### Terms
+
+"Required Role" - You must have this role before being added to other roles
+"Managed Role" - A role "managed" by another role, where the role that manages can add/remove users from
+"only self" - Users can only add/remove themselves from this role
+"Rejected Roles" - Roles not listed at all in any context
+"Override Roles" - Role which can add/remove any role to any user w/o checks
 
 ### Use Cases
 

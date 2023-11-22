@@ -16,13 +16,13 @@ ROLE_SECTION_SCHEMA = {
     'additionalProperties': {
         'type': 'object',
         'properties': {
-            'role_controls': {
+            'role_manages': {
                 'type': 'object',
                 'minProperties': 1,
                 'additionalProperties': {
                     'type': 'object',
                     'properties': {
-                        'controls': {
+                        'manages': {
                             'type': 'array',
                             'minItems': 1,
                             'items': {
@@ -35,7 +35,7 @@ ROLE_SECTION_SCHEMA = {
                         }
                     },
                     'required': [
-                        'controls',
+                        'manages',
                     ]
                 },
             },
@@ -47,14 +47,20 @@ ROLE_SECTION_SCHEMA = {
             },
             'require_role': {
                 'type': 'integer',
-            }
+            },
+            'override_roles': {
+                'type': 'array',
+                'items': {
+                    'type': 'string'
+                }
+            },
         }
     }
 }
 
 class RoleAssignment(CogHelper):
     '''
-    Class that can add roles in more controlled fashion
+    Class that can add roles in more managed fashion
     '''
     def __init__(self, bot, db_engine, logger, settings):
         super().__init__(bot, db_engine, logger, settings)
@@ -99,42 +105,42 @@ class RoleAssignment(CogHelper):
         for item in table.print():
             await ctx.send(f'```{item}```')
 
-    def get_controlled_roles(self, ctx, user=None):
+    def get_managed_roles(self, ctx, user=None):
         '''
-        Get list of roles user controls
+        Get list of roles user manages
         '''
-        controlled_roles = {}
+        managed_roles = {}
         for role in ctx.author.roles:
             if role.id in self.settings[ctx.guild.id]['reject_list']:
                 continue
             try:
-                controls = self.settings[ctx.guild.id]['role_controls'][role.id]
+                manages = self.settings[ctx.guild.id]['role_manages'][role.id]
             except KeyError:
                 continue
-            controls.setdefault('only_self', False)
-            if controls['only_self'] and user:
+            manages.setdefault('only_self', False)
+            if manages['only_self'] and user:
                 if ctx.author != user:
                     continue
-            for role_id in controls['controls']:
-                control_role = ctx.guild.get_role(role_id)
+            for role_id in manages['manages']:
+                manage_role = ctx.guild.get_role(role_id)
                 # Cannot find role
-                if control_role is None:
+                if manage_role is None:
                     continue
-                # We want to make sure if any of the controlled roles have only_self as false, we
+                # We want to make sure if any of the managed roles have only_self as false, we
                 # set the value there to false
                 try:
-                    existing_value = controlled_roles[control_role]
+                    existing_value = managed_roles[manage_role]
                     if existing_value is False:
                         continue
-                    controlled_roles[control_role] = controls['only_self']
+                    managed_roles[manage_role] = manages['only_self']
                 except KeyError:
-                    controlled_roles[control_role] = controls['only_self']
-        return controlled_roles
+                    managed_roles[manage_role] = manages['only_self']
+        return managed_roles
 
     @role.command(name='available')
-    async def role_controlled(self, ctx):
+    async def role_managed(self, ctx):
         '''
-        List all roles in the server that are available to your user to control
+        List all roles in the server that are available to your user to manage
         '''
         headers = [
             {
@@ -148,7 +154,7 @@ class RoleAssignment(CogHelper):
         ]
         table = DapperTable(headers, rows_per_message=15)
         rows = []
-        for role, only_self in self.get_controlled_roles(ctx).items():
+        for role, only_self in self.get_managed_roles(ctx).items():
             row = [f'@{role.name}']
             if only_self:
                 row += ['You Can Add Yourself']
@@ -195,6 +201,18 @@ class RoleAssignment(CogHelper):
                 return True
         return False
 
+    def check_override_role(self, ctx):
+        '''
+        Check if user has override role
+        '''
+        try:
+            for role in ctx.author.roles:
+                if role.id in self.settings[ctx.guild.id]['override_roles']:
+                    return True
+        except KeyError:
+            pass
+        return False
+
     @role.command(name='add')
     async def role_add(self, ctx, user, role):
         '''
@@ -210,10 +228,11 @@ class RoleAssignment(CogHelper):
             return await ctx.send(f'Unable to find user {user}')
         if role_obj is None:
             return await ctx.send(f'Unable to find role {role}')
-        controlled_roles = list(self.get_controlled_roles(ctx, user=user_obj).keys())
         user_name = user_obj.nick or user_obj.display_name or user_obj.name
-        if role_obj not in controlled_roles:
-            return await ctx.send(f'Cannot add users to role {role_obj.name}, you do not control role. Use !role controlled to see a list of roles you control')
+        if not self.check_override_role(ctx):
+            managed_roles = list(self.get_managed_roles(ctx, user=user_obj).keys())
+            if role_obj not in managed_roles:
+                return await ctx.send(f'Cannot add users to role {role_obj.name}, you do not manage role. Use `!role available` to see a list of roles you manage')
         if not self.check_required_role(ctx, user_obj):
             return await ctx.send(f'User {user_name} does not have required roles, skipping')
         if role_obj in user_obj.roles:
@@ -236,10 +255,11 @@ class RoleAssignment(CogHelper):
             return await ctx.send(f'Unable to find user {user}')
         if role_obj is None:
             return await ctx.send(f'Unable to find role {role}')
-        controlled_roles = list(self.get_controlled_roles(ctx, user=user_obj).keys())
         user_name = user_obj.nick or user_obj.display_name or user_obj.name
-        if role_obj not in controlled_roles:
-            return await ctx.send(f'Cannot remove users to role {role_obj.name}, you do not control role. Use !role controlled to see a list of roles you control')
+        if not self.check_override_role(ctx):
+            managed_roles = list(self.get_managed_roles(ctx, user=user_obj).keys())
+            if role_obj not in managed_roles:
+                return await ctx.send(f'Cannot remove users to role {role_obj.name}, you do not manage role. Use `!role available` to see a list of roles you manage')
         if role_obj not in user_obj.roles:
             return await ctx.send(f'User {user_name} does not have role {role_obj.name}, skipping')
         await user_obj.remove_roles(role_obj)
