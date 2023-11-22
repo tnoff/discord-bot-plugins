@@ -51,7 +51,7 @@ ROLE_SECTION_SCHEMA = {
             'override_roles': {
                 'type': 'array',
                 'items': {
-                    'type': 'string'
+                    'type': 'integer'
                 }
             },
         }
