@@ -205,8 +205,8 @@ class RoleAssignment(CogHelper):
             if role.id == self.settings[ctx.guild.id]['required_role']:
                 author_required_role = True
                 break
-        if not author_required_role:
-            return False
+        if not user:
+            return author_required_role
         for role in user.roles:
             if role.id == self.settings[ctx.guild.id]['required_role']:
                 return True
