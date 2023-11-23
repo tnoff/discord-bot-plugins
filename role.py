@@ -145,11 +145,11 @@ class RoleAssignment(CogHelper):
         headers = [
             {
                 'name': 'Role Name',
-                'length': 40,
+                'length': 45,
             },
             {
-                'name': 'Control Status',
-                'length': 40,
+                'name': 'Management Status',
+                'length': 45,
             },
         ]
         table = DapperTable(headers, rows_per_message=15)
@@ -157,9 +157,9 @@ class RoleAssignment(CogHelper):
         for role, only_self in self.get_managed_roles(ctx).items():
             row = [f'@{role.name}']
             if only_self:
-                row += ['You Can Add Yourself']
+                row += ['You Can Add/Remove Yourself']
             else:
-                row += ['You Can Add Youserlf Or Other Users']
+                row += ['You Can Add/Remove Youserlf Or Other Users']
             rows.append(row)
         # Sort output
         rows = sorted(rows)
@@ -233,6 +233,8 @@ class RoleAssignment(CogHelper):
             managed_roles = list(self.get_managed_roles(ctx, user=user_obj).keys())
             if role_obj not in managed_roles:
                 return await ctx.send(f'Cannot add users to role {role_obj.name}, you do not manage role. Use `!role available` to see a list of roles you manage')
+        elif role_obj.id in self.settings[ctx.guild.id]['reject_list']:
+            return await ctx.send(f'Role {role_obj.name} in rejected roles list, cannot add user to role')
         if not self.check_required_role(ctx, user_obj):
             return await ctx.send(f'User {user_name} does not have required roles, skipping')
         if role_obj in user_obj.roles:
@@ -260,6 +262,8 @@ class RoleAssignment(CogHelper):
             managed_roles = list(self.get_managed_roles(ctx, user=user_obj).keys())
             if role_obj not in managed_roles:
                 return await ctx.send(f'Cannot remove users to role {role_obj.name}, you do not manage role. Use `!role available` to see a list of roles you manage')
+        elif role_obj.id in self.settings[ctx.guild.id]['reject_list']:
+            return await ctx.send(f'Role {role_obj.name} in rejected roles list, cannot add user to role')
         if role_obj not in user_obj.roles:
             return await ctx.send(f'User {user_name} does not have role {role_obj.name}, skipping')
         await user_obj.remove_roles(role_obj)

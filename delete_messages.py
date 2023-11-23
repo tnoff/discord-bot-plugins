@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 from discord.errors import HTTPException, DiscordServerError
 from jsonschema import ValidationError
+from pytz import UTC
 
 from discord_bot.cogs.common import CogHelper
 from discord_bot.exceptions import CogMissingRequiredArg
@@ -106,12 +107,11 @@ class DeleteMessages(CogHelper):
             self.logger.debug(f'Delete Messages :: Checking Channel ID {channel_dict["channel_id"]}')
             channel = await async_retry_discord_message_command(self.bot.fetch_channel, channel_dict["channel_id"])
 
-            delete_after = channel.get('delete_after', DELETE_AFTER_DEFAULT)
-            cutoff_period = datetime.utcnow() - timedelta(days=delete_after)
+            delete_after = channel_dict.get('delete_after', DELETE_AFTER_DEFAULT)
+            cutoff_period = (datetime.utcnow() - timedelta(days=delete_after)).replace(tzinfo=UTC)
             messages = [m async for m in retry_discord_message_command(channel.history, limit=128, oldest_first=True)]
             for message in messages:
                 if message.created_at < cutoff_period:
                     self.logger.info(f'Deleting message id {message.id}, in channel {channel.id}, in server {channel_dict["server_id"]}')
-                    print(f'Deleting message id {message.id}, in channel {channel.id}, in server {channel_dict["server_id"]}')
-                    #await async_retry_discord_message_command(message.delete)
+                    await async_retry_discord_message_command(message.delete)
             await sleep(self.loop_sleep_interval)
