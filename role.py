@@ -86,6 +86,8 @@ class RoleAssignment(CogHelper):
         '''
         List all roles within the server
         '''
+        if not self.check_required_role(ctx):
+            return await ctx.send(f'User {ctx.author.name} does not have required roles, skipping')
         headers = [
             {
                 'name': 'Role Name',
@@ -142,6 +144,8 @@ class RoleAssignment(CogHelper):
         '''
         List all roles in the server that are available to your user to manage
         '''
+        if not self.check_required_role(ctx):
+            return await ctx.send(f'User {ctx.author.name} does not have required roles, skipping')
         headers = [
             {
                 'name': 'Role Name',
@@ -192,10 +196,17 @@ class RoleAssignment(CogHelper):
             return user, None
         return user, role
 
-    def check_required_role(self, ctx, user):
+    def check_required_role(self, ctx, user=None):
         '''
         Check user has required role before adding
         '''
+        author_required_role = False
+        for role in ctx.author.roles:
+            if role.id == self.settings[ctx.guild.id]['required_role']:
+                author_required_role = True
+                break
+        if not author_required_role:
+            return False
         for role in user.roles:
             if role.id == self.settings[ctx.guild.id]['required_role']:
                 return True
@@ -235,7 +246,7 @@ class RoleAssignment(CogHelper):
                 return await ctx.send(f'Cannot add users to role {role_obj.name}, you do not manage role. Use `!role available` to see a list of roles you manage')
         elif role_obj.id in self.settings[ctx.guild.id]['reject_list']:
             return await ctx.send(f'Role {role_obj.name} in rejected roles list, cannot add user to role')
-        if not self.check_required_role(ctx, user_obj):
+        if not self.check_required_role(ctx, user=user_obj):
             return await ctx.send(f'User {user_name} does not have required roles, skipping')
         if role_obj in user_obj.roles:
             return await ctx.send(f'User {user_name} already has role {role_obj.name}, skipping')
@@ -264,6 +275,8 @@ class RoleAssignment(CogHelper):
                 return await ctx.send(f'Cannot remove users to role {role_obj.name}, you do not manage role. Use `!role available` to see a list of roles you manage')
         elif role_obj.id in self.settings[ctx.guild.id]['reject_list']:
             return await ctx.send(f'Role {role_obj.name} in rejected roles list, cannot add user to role')
+        if not self.check_required_role(ctx, user=user_obj):
+            return await ctx.send(f'User {user_name} does not have required roles, skipping')
         if role_obj not in user_obj.roles:
             return await ctx.send(f'User {user_name} does not have role {role_obj.name}, skipping')
         await user_obj.remove_roles(role_obj)

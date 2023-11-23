@@ -167,7 +167,7 @@ Then you can use commands like
 
 ### Terms
 
-"Required Role" - You must have this role before being added to other roles
+"Required Role" - You must have this role to use the bot for any role
 "Managed Role" - A role "managed" by another role, where the role that manages can add/remove users from
 "only self" - Users can only add/remove themselves from this role
 "Rejected Roles" - Roles not listed at all in any context
