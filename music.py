@@ -906,7 +906,7 @@ class MusicPlayer:
     '''
 
     def __init__(self, bot, guild, cog_cleanup, text_channel, voice_channel, logger,
-                 cache_file_enabled, max_song_length, queue_max_size, delete_after, history_playlist_id, disconnect_timeout):
+                 cache_file_enabled, queue_max_size, delete_after, history_playlist_id, disconnect_timeout):
         self.bot = bot
         self.logger = logger
         self.guild = guild
@@ -928,7 +928,6 @@ class MusicPlayer:
         self.song_skipped = False
         self.queue_messages = [] # Show current queue
         self.volume = 0.5
-        self.max_song_length = max_song_length
 
         # For showing messages
         self.lock_file = Path(NamedTemporaryFile(delete=False).name) #pylint:disable=consider-using-with
@@ -1383,7 +1382,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
             source_download = await self.download_client.create_source(source_dict, self.bot.loop, download=True)
         except SongTooLong:
             await retry_discord_message_command(source_dict['message'].edit,
-                                                content=f'Search "{source_dict["search_string"]}" exceeds maximum of {player.max_song_length} seconds, skipping',
+                                                content=f'Search "{source_dict["search_string"]}" exceeds maximum of {self.max_song_length} seconds, skipping',
                                                 delete_after=player.delete_after)
             self.logger.warning(f'Music ::: Song too long to play in queue, skipping "{source_dict["search_string"]}"')
             return
@@ -1503,7 +1502,7 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                 history_playlist_id = history_playlist.id
             # Generate and start player
             player = MusicPlayer(ctx.bot, ctx.guild, ctx.cog.cleanup, ctx.channel, voice_channel,
-                                 self.logger, self.max_song_length, self.cache_file is not None,
+                                 self.logger, self.cache_file is not None,
                                  self.queue_max_size, self.delete_after, history_playlist_id, self.disconnect_timeout)
             await player.start_tasks()
             self.players[ctx.guild.id] = player
