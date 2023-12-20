@@ -1198,17 +1198,22 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
 
     def __init__(self, bot, db_engine, logger, settings):
         super().__init__(bot, db_engine, logger, settings)
-        BASE.metadata.create_all(self.db_engine)
-        BASE.metadata.bind = self.db_engine
+
         self.logger = logger
         self.players = {}
+        self._cleanup_task = None
+        self._download_task = None
+        self.enabled = True
         try:
             validate_config(settings['music'], MUSIC_SECTION_SCHEMA)
         except ValidationError as exc:
             raise CogMissingRequiredArg('Unable to import music bot due to invalid config') from exc
         except KeyError:
             settings['music'] = {}
-
+            self.enabled = False
+            return
+        BASE.metadata.create_all(self.db_engine)
+        BASE.metadata.bind = self.db_engine
         self.delete_after = settings['music'].get('message_delete_after', DELETE_AFTER_DEFAULT)
         self.queue_max_size = settings['music'].get('queue_max_size', QUEUE_MAX_SIZE_DEFAULT)
         self.download_queue = MyQueue(maxsize=self.queue_max_size)
@@ -1264,32 +1269,33 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
         self.download_client = DownloadClient(ytdl, self.logger,
                                               spotify_client=self.spotify_client, youtube_client=self.youtube_client,
                                               delete_after=self.delete_after)
-        self._cleanup_task = None
-        self._download_task = None
+
 
     async def cog_load(self):
         '''
         When cog starts
         '''
-        self._cleanup_task = self.bot.loop.create_task(self.cleanup_players())
-        self._download_task = self.bot.loop.create_task(self.download_files())
+        if self.enabled:
+            self._cleanup_task = self.bot.loop.create_task(self.cleanup_players())
+            self._download_task = self.bot.loop.create_task(self.download_files())
 
     async def cog_unload(self):
         '''
         Run when cog stops
         '''
-        if self.download_dir.exists() and not self.enable_cache:
-            rm_tree(self.download_dir)
+        if self.enabled:
+            if self.download_dir.exists() and not self.enable_cache:
+                rm_tree(self.download_dir)
 
-        guilds = list(self.players.keys)
-        for guild_id in guilds:
-            guild = await self.bot.fetch_guild(guild_id)
-            await self.cleanup(guild)
+            guilds = list(self.players.keys)
+            for guild_id in guilds:
+                guild = await self.bot.fetch_guild(guild_id)
+                await self.cleanup(guild)
 
-        if self._cleanup_task:
-            self._cleanup_task.cancel()
-        if self._download_task:
-            self._download_task.cancel()
+            if self._cleanup_task:
+                self._cleanup_task.cancel()
+            if self._download_task:
+                self._download_task.cancel()
 
     async def cleanup_players(self):
         '''

@@ -68,9 +68,8 @@ class RoleAssignment(CogHelper):
         self.players = {}
         try:
             validate_config(settings['role'], ROLE_SECTION_SCHEMA)
-        except ValidationError as exc:
+        except (ValidationError, KeyError) as exc:
             raise CogMissingRequiredArg('Unable to import roles due to invalid config') from exc
-
         self.settings = settings['role']
 
     @commands.group(name='role', invoke_without_command=False)
