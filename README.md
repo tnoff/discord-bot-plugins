@@ -145,16 +145,18 @@ Example Config
 ```
 role:
     <server-id>:
-        reject_list:
-          - <role-you-dont-want-ppl-to-edit-id>
-        require_role: <user being added must already have this role>
         role_manages:
+          reject_list:
+            - <role-you-dont-want-ppl-to-edit-id>
+          require_roles:
+            - <user being added must already have this role>
+            - <but only needs one of these roles>
+          override_roles:
+            - <role-id-which-can-add-any-role-to-any-user>
           <role-id-which-controls-listed-roles>:
             manages:
               - <role-id-which-controller-can-add-or-remove-from>
             only_self: True # Optional arg, user can only add/remove themselves to this role
-        override_roles:
-          - <role-id-which-can-add-any-role-to-any-user>
 ```
 
 Then you can use commands like

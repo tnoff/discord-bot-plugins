@@ -16,8 +16,39 @@ ROLE_SECTION_SCHEMA = {
     'additionalProperties': {
         'type': 'object',
         'properties': {
+            'role_list': {
+                'type': 'object',
+                'properties': {
+                    'hide_list': {
+                        'type': 'array',
+                    },
+                    'items': {
+                        'type': 'integer'
+                    },
+                },
+            },
             'role_manages': {
                 'type': 'object',
+                'properties': {
+                    'reject_list': {
+                        'type': 'array',
+                        'items' : {
+                            'type': 'integer',
+                        },
+                    },
+                    'required_roles': {
+                        'type': 'array',
+                        'items': {
+                            'type': 'integer',
+                        },
+                    },
+                    'override_roles': {
+                        'type': 'array',
+                        'items': {
+                            'type': 'integer'
+                        }
+                    },
+                },
                 'minProperties': 1,
                 'additionalProperties': {
                     'type': 'object',
@@ -32,27 +63,12 @@ ROLE_SECTION_SCHEMA = {
                         'only_self': {
                             'type': 'boolean',
                             'default': False,
-                        }
+                        },
                     },
                     'required': [
                         'manages',
                     ]
                 },
-            },
-            'reject_list': {
-                'type': 'array',
-                'items' : {
-                    'type': 'integer',
-                }
-            },
-            'require_role': {
-                'type': 'integer',
-            },
-            'override_roles': {
-                'type': 'array',
-                'items': {
-                    'type': 'integer'
-                }
             },
         }
     }
@@ -72,6 +88,112 @@ class RoleAssignment(CogHelper):
             raise CogMissingRequiredArg('Unable to import roles due to invalid config') from exc
         self.settings = settings['role']
 
+
+    def __get_reject_list(self, ctx):
+        '''
+        Get server reject list
+        '''
+        try:
+            return self.settings[ctx.guild.id]['role_manages']['reject_list']
+        except KeyError:
+            return []
+
+    def __get_required_roles(self, ctx):
+        '''
+        Get server required role
+        '''
+        try:
+            return self.settings[ctx.guild.id]['role_manages']['required_roles']
+        except KeyError:
+            return None
+
+    def __get_override_role(self, ctx):
+        '''
+        Get service override role
+        '''
+        try:
+            return self.settings[ctx.guild.id]['role_manages']['override_roles']
+        except KeyError:
+            return []
+
+    def __get_role_hide(self, ctx):
+        '''
+        Get roles you cannot list users for
+        '''
+        try:
+            return self.settings[ctx.guild.id]['role_list']['hide_list']
+        except KeyError:
+            return []
+
+    async def get_user(self, ctx, user):
+        '''
+        Get user from input
+        '''
+        try:
+            user_id = int(search(r'\d+', user).group())
+        except AttributeError:
+            return None
+        try:
+            user = await ctx.guild.fetch_member(user_id)
+        except NotFound:
+            return None
+        return user
+
+    def get_role(self, ctx, role):
+        '''
+        Get role from input
+        '''
+        try:
+            role_id = int(search(r'\d+', role).group())
+        except AttributeError:
+            return None
+        try:
+            role = ctx.guild.get_role(role_id)
+        except NotFound:
+            return None
+        return role
+
+    async def get_user_and_role(self, ctx, user, role):
+        '''
+        Get user and role objects
+        '''
+        user = await self.get_user(ctx, user)
+        if user is None:
+            return None, None
+        role = self.get_role(ctx, role)
+        return user, role
+
+    def check_required_roles(self, ctx, user=None):
+        '''
+        Check user has required role before adding
+        '''
+        author_required_role = False
+        required_roles = self.__get_required_roles(ctx)
+        if not required_roles:
+            return True
+        for role in ctx.author.roles:
+            if role.id in required_roles:
+                author_required_role = True
+                break
+        if not user:
+            return author_required_role
+        for role in user.roles:
+            if role.id in required_roles:
+                return True
+        return False
+
+    def check_override_role(self, ctx):
+        '''
+        Check if user has override role
+        '''
+        try:
+            for role in ctx.author.roles:
+                if role.id in self.__get_override_role(ctx):
+                    return True
+        except KeyError:
+            pass
+        return False
+
     @commands.group(name='role', invoke_without_command=False)
     async def role(self, ctx):
         '''
@@ -85,7 +207,7 @@ class RoleAssignment(CogHelper):
         '''
         List all roles within the server
         '''
-        if not self.check_required_role(ctx):
+        if not self.check_required_roles(ctx):
             return await ctx.send(f'User {ctx.author.name} does not have required roles, skipping')
         headers = [
             {
@@ -96,11 +218,37 @@ class RoleAssignment(CogHelper):
         table = DapperTable(headers, rows_per_message=15)
         role_names = []
         for role in ctx.guild.roles:
-            if role.id in self.settings[ctx.guild.id]['reject_list']:
+            if role.id in self.__get_reject_list(ctx):
                 continue
             role_names.append(role.name)
         for name in sorted(role_names):
             table.add_row([f'@{name}'])
+        if table.size() == 0:
+            return await ctx.send('No roles found')
+        for item in table.print():
+            await ctx.send(f'```{item}```')
+
+    @role.command(name='users')
+    async def role_list_users(self, ctx, role):
+        '''
+        List all users with a specific role
+        '''
+        role_obj = self.get_role(ctx, role)
+        if role_obj is None:
+            return await ctx.send(f'Unable to find role {role}')
+        if role_obj.id in self.__get_role_hide(ctx):
+            return await ctx.send(f'Unable to list users for role {role}, in reject list')
+
+        headers = [
+            {
+                'name': 'User Name',
+                'length': 80,
+            },
+        ]
+        table = DapperTable(headers, rows_per_message=15)
+        for member in role_obj.member:
+            user_name = member.nick or member.display_name or member.name
+            table.add_row([f'@{user_name}'])
         if table.size() == 0:
             return await ctx.send('No roles found')
         for item in table.print():
@@ -112,7 +260,7 @@ class RoleAssignment(CogHelper):
         '''
         managed_roles = {}
         for role in ctx.author.roles:
-            if role.id in self.settings[ctx.guild.id]['reject_list']:
+            if role.id in self.__get_reject_list(ctx):
                 continue
             try:
                 manages = self.settings[ctx.guild.id]['role_manages'][role.id]
@@ -143,7 +291,7 @@ class RoleAssignment(CogHelper):
         '''
         List all roles in the server that are available to your user to manage
         '''
-        if not self.check_required_role(ctx):
+        if not self.check_required_roles(ctx):
             return await ctx.send(f'User {ctx.author.name} does not have required roles, skipping')
         headers = [
             {
@@ -173,55 +321,7 @@ class RoleAssignment(CogHelper):
         for item in table.print():
             await ctx.send(f'```{item}```')
 
-    async def get_user_and_role(self, ctx, user, role):
-        '''
-        Get user and role objects
-        '''
-        try:
-            user_id = int(search(r'\d+', user).group())
-        except AttributeError:
-            return None, None
-        try:
-            user = await ctx.guild.fetch_member(user_id)
-        except NotFound:
-            return None, None
-        try:
-            role_id = int(search(r'\d+', role).group())
-        except AttributeError:
-            return user, None
-        try:
-            role = ctx.guild.get_role(role_id)
-        except NotFound:
-            return user, None
-        return user, role
 
-    def check_required_role(self, ctx, user=None):
-        '''
-        Check user has required role before adding
-        '''
-        author_required_role = False
-        for role in ctx.author.roles:
-            if role.id == self.settings[ctx.guild.id]['required_role']:
-                author_required_role = True
-                break
-        if not user:
-            return author_required_role
-        for role in user.roles:
-            if role.id == self.settings[ctx.guild.id]['required_role']:
-                return True
-        return False
-
-    def check_override_role(self, ctx):
-        '''
-        Check if user has override role
-        '''
-        try:
-            for role in ctx.author.roles:
-                if role.id in self.settings[ctx.guild.id]['override_roles']:
-                    return True
-        except KeyError:
-            pass
-        return False
 
     @role.command(name='add')
     async def role_add(self, ctx, user, role):
@@ -243,9 +343,9 @@ class RoleAssignment(CogHelper):
             managed_roles = list(self.get_managed_roles(ctx, user=user_obj).keys())
             if role_obj not in managed_roles:
                 return await ctx.send(f'Cannot add users to role {role_obj.name}, you do not manage role. Use `!role available` to see a list of roles you manage')
-        elif role_obj.id in self.settings[ctx.guild.id]['reject_list']:
+        elif role_obj.id in self.__get_reject_list(ctx):
             return await ctx.send(f'Role {role_obj.name} in rejected roles list, cannot add user to role')
-        if not self.check_required_role(ctx, user=user_obj):
+        if not self.check_required_roles(ctx, user=user_obj):
             return await ctx.send(f'User {user_name} does not have required roles, skipping')
         if role_obj in user_obj.roles:
             return await ctx.send(f'User {user_name} already has role {role_obj.name}, skipping')
@@ -274,7 +374,7 @@ class RoleAssignment(CogHelper):
                 return await ctx.send(f'Cannot remove users to role {role_obj.name}, you do not manage role. Use `!role available` to see a list of roles you manage')
         elif role_obj.id in self.settings[ctx.guild.id]['reject_list']:
             return await ctx.send(f'Role {role_obj.name} in rejected roles list, cannot add user to role')
-        if not self.check_required_role(ctx, user=user_obj):
+        if not self.check_required_roles(ctx, user=user_obj):
             return await ctx.send(f'User {user_name} does not have required roles, skipping')
         if role_obj not in user_obj.roles:
             return await ctx.send(f'User {user_name} does not have role {role_obj.name}, skipping')
