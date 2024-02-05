@@ -212,7 +212,7 @@ class RoleAssignment(CogHelper):
         headers = [
             {
                 'name': 'Role Name',
-                'length': 80,
+                'length': 30,
             },
         ]
         table = DapperTable(headers, rows_per_message=15)
@@ -241,7 +241,7 @@ class RoleAssignment(CogHelper):
         headers = [
             {
                 'name': 'User Name',
-                'length': 80,
+                'length': 30,
             },
         ]
         table = DapperTable(headers, rows_per_message=15)
@@ -295,11 +295,11 @@ class RoleAssignment(CogHelper):
         headers = [
             {
                 'name': 'Role Name',
-                'length': 45,
+                'length': 30,
             },
             {
-                'name': 'Management Status',
-                'length': 45,
+                'name': 'Control',
+                'length': 10,
             },
         ]
         table = DapperTable(headers, rows_per_message=15)
@@ -307,9 +307,9 @@ class RoleAssignment(CogHelper):
         for role, only_self in self.get_managed_roles(ctx).items():
             row = [f'@{role.name}']
             if only_self:
-                row += ['You Can Add/Remove Yourself']
+                row += ['Self-Serve']
             else:
-                row += ['You Can Add/Remove Youserlf Or Other Users']
+                row += ['Full']
             rows.append(row)
         # Sort output
         rows = sorted(rows)
