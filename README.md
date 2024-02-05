@@ -145,6 +145,9 @@ Example Config
 ```
 role:
     <server-id>:
+        role_list:
+          hide_list:
+            - <do not show list of users for this role id>
         role_manages:
           reject_list:
             - <role-you-dont-want-ppl-to-edit-id>

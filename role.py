@@ -238,7 +238,6 @@ class RoleAssignment(CogHelper):
             return await ctx.send(f'Unable to find role {role}')
         if role_obj.id in self.__get_role_hide(ctx):
             return await ctx.send(f'Unable to list users for role {role}, in reject list')
-
         headers = [
             {
                 'name': 'User Name',
@@ -246,11 +245,11 @@ class RoleAssignment(CogHelper):
             },
         ]
         table = DapperTable(headers, rows_per_message=15)
-        for member in role_obj.member:
+        for member in role_obj.members:
             user_name = member.nick or member.display_name or member.name
             table.add_row([f'@{user_name}'])
         if table.size() == 0:
-            return await ctx.send('No roles found')
+            return await ctx.send('No users found for role')
         for item in table.print():
             await ctx.send(f'```{item}```')
 
@@ -263,7 +262,7 @@ class RoleAssignment(CogHelper):
             if role.id in self.__get_reject_list(ctx):
                 continue
             try:
-                manages = self.settings[ctx.guild.id]['role_manages'][role.id]
+                manages = self.settings['role_manages'][ctx.guild.id]['role_manages'][role.id]
             except KeyError:
                 continue
             manages.setdefault('only_self', False)
@@ -320,8 +319,6 @@ class RoleAssignment(CogHelper):
             return await ctx.send('No roles found')
         for item in table.print():
             await ctx.send(f'```{item}```')
-
-
 
     @role.command(name='add')
     async def role_add(self, ctx, user, role):
