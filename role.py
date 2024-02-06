@@ -159,7 +159,7 @@ class RoleAssignment(CogHelper):
         for r in ctx.guild.roles:
             role_name = r.name.lower().replace(' ', '')
             if role_name == input_role:
-                return role
+                return r
         return None
 
     async def get_user_and_role(self, ctx, user, role):
