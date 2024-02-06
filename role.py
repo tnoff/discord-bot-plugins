@@ -162,15 +162,21 @@ class RoleAssignment(CogHelper):
                 return r
         return None
 
-    async def get_user_and_role(self, ctx, user, role):
+    async def get_user_or_role(self, ctx, inputs):
         '''
-        Get user and role objects
+        Get user and role list from string inputs
         '''
-        user = await self.get_user(ctx, user)
-        if user is None:
-            return None, None
-        role = self.get_role(ctx, role)
-        return user, role
+        # Assume role is last input, and we see users until then
+        inputs = inputs.split(' ')
+        users = []
+        for (count, i) in enumerate(inputs):
+            user = await self.get_user(ctx, i)
+            if not user:
+                break
+            users.append(user)
+        role_string = ' '.join(i for i in inputs[count::]) #pylint: disable=undefined-loop-variable
+        role_obj = self.get_role(ctx, role_string)
+        return users, role_obj
 
     def check_required_roles(self, ctx, user=None):
         '''
@@ -330,59 +336,67 @@ class RoleAssignment(CogHelper):
             await ctx.send(f'```{item}```')
 
     @role.command(name='add')
-    async def role_add(self, ctx, user, *, role: str):
+    async def role_add(self, ctx, *, inputs: str):
         '''
         Add user to role that is available to you
 
-        user [@mention]
-            User you wish to add role to
-        role [@mention]
-            Role you wish to add that user to
+        inputs: Either @mention of user, @mention of role, or role name
+            Role input must be last entered
         '''
-        user_obj, role_obj = await self.get_user_and_role(ctx, user, role)
-        if user_obj is None:
-            return await ctx.send(f'Unable to find user {user}')
-        if role_obj is None:
-            return await ctx.send(f'Unable to find role {role}')
-        user_name = user_obj.nick or user_obj.display_name or user_obj.name
-        if not self.check_override_role(ctx):
-            managed_roles = list(self.get_managed_roles(ctx, user=user_obj).keys())
-            if role_obj not in managed_roles:
-                return await ctx.send(f'Cannot add users to role {role_obj.name}, you do not manage role. Use `!role available` to see a list of roles you manage')
-        elif role_obj.id in self.__get_reject_list(ctx):
-            return await ctx.send(f'Role {role_obj.name} in rejected roles list, cannot add user to role')
-        if not self.check_required_roles(ctx, user=user_obj):
-            return await ctx.send(f'User {user_name} does not have required roles, skipping')
-        if role_obj in user_obj.roles:
-            return await ctx.send(f'User {user_name} already has role {role_obj.name}, skipping')
-        await user_obj.add_roles(role_obj)
-        return await ctx.send(f'Added user {user_name} to role {role_obj.name}')
+        users, role_obj = await self.get_user_or_role(ctx, inputs)
+        if not users:
+            return await ctx.send('Unable to find any users in input')
+        if not role_obj:
+            return await ctx.send('Unable to find role')
+
+        for user_obj in users:
+            user_name = user_obj.nick or user_obj.display_name or user_obj.name
+            if not self.check_override_role(ctx):
+                managed_roles = list(self.get_managed_roles(ctx, user=user_obj).keys())
+                if role_obj not in managed_roles:
+                    await ctx.send(f'Cannot add users to role {role_obj.name}, you do not manage role. Use `!role available` to see a list of roles you manage')
+                    continue
+            elif role_obj.id in self.__get_reject_list(ctx):
+                await ctx.send(f'Role {role_obj.name} in rejected roles list, cannot add user to role')
+                continue
+            if not self.check_required_roles(ctx, user=user_obj):
+                await ctx.send(f'User {user_name} does not have required roles, skipping')
+                continue
+            if role_obj in user_obj.roles:
+                await ctx.send(f'User {user_name} already has role {role_obj.name}, skipping')
+                continue
+            await user_obj.add_roles(role_obj)
+            await ctx.send(f'Added user {user_name} to role {role_obj.name}')
 
     @role.command(name='remove')
-    async def role_remove(self, ctx, user, *, role: str):
+    async def role_remove(self, ctx, *, inputs):
         '''
-        Remove user from a role available to you
+        Add user to role that is available to you
 
-        user [@mention]
-            User you wish to remove role from
-        role [@mention]
-            Role you wish to remove that user from
+        inputs: Either @mention of user, @mention of role, or role name
+            Role input must be last entered
         '''
-        user_obj, role_obj = await self.get_user_and_role(ctx, user, role)
-        if user_obj is None:
-            return await ctx.send(f'Unable to find user {user}')
-        if role_obj is None:
-            return await ctx.send(f'Unable to find role {role}')
-        user_name = user_obj.nick or user_obj.display_name or user_obj.name
-        if not self.check_override_role(ctx):
-            managed_roles = list(self.get_managed_roles(ctx, user=user_obj).keys())
-            if role_obj not in managed_roles:
-                return await ctx.send(f'Cannot remove users to role {role_obj.name}, you do not manage role. Use `!role available` to see a list of roles you manage')
-        elif role_obj.id in self.settings[ctx.guild.id]['reject_list']:
-            return await ctx.send(f'Role {role_obj.name} in rejected roles list, cannot add user to role')
-        if not self.check_required_roles(ctx, user=user_obj):
-            return await ctx.send(f'User {user_name} does not have required roles, skipping')
-        if role_obj not in user_obj.roles:
-            return await ctx.send(f'User {user_name} does not have role {role_obj.name}, skipping')
-        await user_obj.remove_roles(role_obj)
-        return await ctx.send(f'Removed user {user_name} from role {role_obj.name}')
+        users, role_obj = await self.get_user_or_role(ctx, inputs)
+        if not users:
+            return await ctx.send('Unable to find any users in input')
+        if not role_obj:
+            return await ctx.send('Unable to find role')
+
+        for user_obj in users:
+            user_name = user_obj.nick or user_obj.display_name or user_obj.name
+            if not self.check_override_role(ctx):
+                managed_roles = list(self.get_managed_roles(ctx, user=user_obj).keys())
+                if role_obj not in managed_roles:
+                    await ctx.send(f'Cannot remove users to role {role_obj.name}, you do not manage role. Use `!role available` to see a list of roles you manage')
+                    continue
+            elif role_obj.id in self.settings[ctx.guild.id]['reject_list']:
+                await ctx.send(f'Role {role_obj.name} in rejected roles list, cannot add user to role')
+                continue
+            if not self.check_required_roles(ctx, user=user_obj):
+                await ctx.send(f'User {user_name} does not have required roles, skipping')
+                continue
+            if role_obj not in user_obj.roles:
+                await ctx.send(f'User {user_name} does not have role {role_obj.name}, skipping')
+                continue
+            await user_obj.remove_roles(role_obj)
+            return await ctx.send(f'Removed user {user_name} from role {role_obj.name}')
