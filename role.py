@@ -244,7 +244,7 @@ class RoleAssignment(CogHelper):
             await ctx.send(f'```{item}```')
 
     @role.command(name='users')
-    async def role_list_users(self, ctx, role):
+    async def role_list_users(self, ctx, *, role: str):
         '''
         List all users with a specific role
         '''
