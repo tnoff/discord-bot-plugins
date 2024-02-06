@@ -146,12 +146,21 @@ class RoleAssignment(CogHelper):
         try:
             role_id = int(search(r'\d+', role).group())
         except AttributeError:
-            return None
-        try:
-            role = ctx.guild.get_role(role_id)
-        except NotFound:
-            return None
-        return role
+            role_id = None
+        # Get role first from id if present
+        if role_id:
+            try:
+                role = ctx.guild.get_role(role_id)
+                return role
+            except NotFound:
+                return None
+        # If not try to find it by the name
+        input_role = role.lower().replace(' ', '').replace('"', '')
+        for r in ctx.guild.roles:
+            role_name = r.name.lower().replace(' ', '')
+            if role_name == input_role:
+                return role
+        return None
 
     async def get_user_and_role(self, ctx, user, role):
         '''
@@ -321,7 +330,7 @@ class RoleAssignment(CogHelper):
             await ctx.send(f'```{item}```')
 
     @role.command(name='add')
-    async def role_add(self, ctx, user, role):
+    async def role_add(self, ctx, user, *, role: str):
         '''
         Add user to role that is available to you
 
