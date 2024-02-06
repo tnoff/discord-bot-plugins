@@ -359,7 +359,7 @@ class RoleAssignment(CogHelper):
         return await ctx.send(f'Added user {user_name} to role {role_obj.name}')
 
     @role.command(name='remove')
-    async def role_remove(self, ctx, user, role):
+    async def role_remove(self, ctx, user, *, role: str):
         '''
         Remove user from a role available to you
 
