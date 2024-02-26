@@ -88,6 +88,11 @@ class RoleAssignment(CogHelper):
             raise CogMissingRequiredArg('Unable to import roles due to invalid config') from exc
         self.settings = settings['role']
 
+    def __clean_input(self, stringy):
+        '''
+        Remove “ chars from input, not treated as quotes
+        '''
+        return stringy.replace('“', '')
 
     def __get_reject_list(self, ctx):
         '''
@@ -248,6 +253,7 @@ class RoleAssignment(CogHelper):
         '''
         List all users with a specific role
         '''
+        role = self.__clean_input(role)
         role_obj = self.get_role(ctx, role)
         if role_obj is None:
             return await ctx.send(f'Unable to find role {role}')
@@ -343,6 +349,7 @@ class RoleAssignment(CogHelper):
         inputs: Either @mention of user, @mention of role, or role name
             Role input must be last entered
         '''
+        inputs = self.__clean_input(inputs)
         users, role_obj = await self.get_user_or_role(ctx, inputs)
         if not users:
             return await ctx.send('Unable to find any users in input')
@@ -369,13 +376,14 @@ class RoleAssignment(CogHelper):
             await ctx.send(f'Added user {user_name} to role {role_obj.name}')
 
     @role.command(name='remove')
-    async def role_remove(self, ctx, *, inputs):
+    async def role_remove(self, ctx, *, inputs: str):
         '''
         Add user to role that is available to you
 
         inputs: Either @mention of user, @mention of role, or role name
             Role input must be last entered
         '''
+        inputs = self.__clean_input(inputs)
         users, role_obj = await self.get_user_or_role(ctx, inputs)
         if not users:
             return await ctx.send('Unable to find any users in input')
