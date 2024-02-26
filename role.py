@@ -92,7 +92,7 @@ class RoleAssignment(CogHelper):
         '''
         Remove “ chars from input, not treated as quotes
         '''
-        return stringy.replace('“', '')
+        return stringy.replace('“', '').replace('”', '')
 
     def __get_reject_list(self, ctx):
         '''
