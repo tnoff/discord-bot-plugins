@@ -17,7 +17,7 @@ from uuid import uuid4
 from async_timeout import timeout
 from dappertable import shorten_string_cjk, DapperTable
 from discord import FFmpegPCMAudio
-from discord.errors import HTTPException, DiscordServerError, RateLimited
+from discord.errors import HTTPException, DiscordServerError, RateLimited, NotFound
 from discord.ext import commands
 from moviepy.editor import AudioFileClip, afx
 from jsonschema import ValidationError
@@ -1058,7 +1058,10 @@ class MusicPlayer:
         new_queue_strings = self.get_queue_message() or []
         if delete_messages:
             for queue_message in self.queue_messages:
-                await retry_discord_message_command(queue_message.delete)
+                try:
+                    await retry_discord_message_command(queue_message.delete)
+                except NotFound:
+                    pass
             self.queue_messages = []
         elif len(self.queue_messages) > len(new_queue_strings):
             for _ in range(len(self.queue_messages) - len(new_queue_strings)):
