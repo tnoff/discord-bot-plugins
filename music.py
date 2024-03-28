@@ -1044,6 +1044,27 @@ class MusicPlayer:
             items.append(f'```{t}```')
         return items
 
+    async def move_queue_message_channel(self, new_channel):
+        '''
+        Move queue messages to new text channel
+        '''
+        await self.acquire_lock()
+        if self.play_queue.shutdown:
+            await self.release_lock()
+            return
+        self.logger.debug(f'Music :: Moving queue messages in guild {self.guild.id} from channel {self.text_channel.id} to channel {new_channel.id}')
+        new_messages = []
+        for message in self.queue_messages:
+            new_messages.append(await retry_discord_message_command(new_channel.send, message.content))
+        for queue_message in self.queue_messages:
+            try:
+                await retry_discord_message_command(queue_message.delete)
+            except NotFound:
+                pass
+        self.queue_messages = new_messages
+        self.text_channel = new_channel
+        await self.release_lock()
+
     async def update_queue_strings(self):
         '''
         Update queue message in channel
@@ -1831,6 +1852,27 @@ class Music(CogHelper): #pylint:disable=too-many-public-methods
                                             delete_after=self.delete_after)
 
         await self.cleanup(ctx.guild)
+
+    @commands.command(name='move-messages')
+    async def move_messages_here(self, ctx):
+        '''
+        Move queue messages to this text chanel
+        '''
+        if not await self.check_user_role(ctx):
+            return await retry_discord_message_command(ctx.send, 'Unable to verify user role, ignoring command', delete_after=self.delete_after)
+        if not await self.__check_author_voice_chat(ctx):
+            return
+        vc = ctx.voice_client
+
+        if not vc or not vc.is_connected():
+            return await retry_discord_message_command(ctx.send, 'I am not currently playing anything',
+                                                       delete_after=self.delete_after)
+
+        player = await self.get_player(ctx, vc.channel)
+        if ctx.channel.id == player.text_channel.id:
+            return await retry_discord_message_command(ctx.send, f'I am already sending messages to channel {ctx.channel.name}',
+                                                       delete_after=self.delete_after)
+        await player.move_queue_message_channel(ctx.channel)
 
     async def __get_playlist(self, playlist_index, ctx):
         try:
